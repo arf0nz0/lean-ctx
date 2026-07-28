@@ -55,6 +55,7 @@ pub mod introspect;
 pub mod latency_guard;
 mod lineage;
 pub mod metrics;
+pub mod nullclaw_tool_results;
 pub mod model_router;
 pub mod models_api;
 pub mod ocla_cache_bridge;

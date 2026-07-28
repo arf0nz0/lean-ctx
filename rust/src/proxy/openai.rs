@@ -126,6 +126,15 @@ pub(super) fn compress_request_body(
             }
         }
 
+        // nullclaw XML tool results arrive as role:user (see
+        // nullclaw_tool_results module).  Compress native-tool blocks; ctx_*
+        // blocks are skipped inside the helper (#479).
+        modified |= super::nullclaw_tool_results::compress_user_tool_results(
+            messages,
+            live_compress,
+            |n| cfg.proxy.is_tool_live_compress_excluded(n),
+        );
+
         // Frozen-region prose: system anchors (deterministic rewrite keeps the
         // auto-cached prefix byte-stable, so safe at any position outside the
         // client-cached prefix) and user turns in `[cached, boundary)`. The
