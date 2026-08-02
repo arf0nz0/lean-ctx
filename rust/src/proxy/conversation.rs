@@ -271,6 +271,20 @@ fn extract_recent_file_mentions(messages: &[Value]) -> Vec<String> {
     files
 }
 
+/// Truncate a string at a char boundary to avoid UTF-8 panics on multi-byte
+/// characters (e.g. emoji). Falls back to the nearest valid boundary at or
+/// below `max_bytes`.
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn message_token_estimate(msg: &Value) -> usize {
     let content = extract_text_content(msg);
     content.len() / CHARS_PER_TOKEN + 4 // +4 for role/structure overhead
@@ -289,7 +303,7 @@ fn summarize_message(msg: &Value, index: usize) -> String {
             .and_then(|n| n.as_str())
             .or_else(|| msg.get("tool_call_id").and_then(|t| t.as_str()))
             .unwrap_or("tool");
-        let preview = &content[..content.len().min(80)];
+        let preview = safe_truncate(&content, 80);
         return format!(
             "[Turn {}: {} result — {}…]",
             index + 1,
@@ -303,7 +317,7 @@ fn summarize_message(msg: &Value, index: usize) -> String {
         let first_sentence = content
             .split(['.', '\n'])
             .find(|s| s.trim().len() > 10)
-            .unwrap_or(&content[..content.len().min(60)]);
+            .unwrap_or(safe_truncate(&content, 60));
         return format!(
             "[Turn {}: assistant — {}]",
             index + 1,
@@ -312,7 +326,7 @@ fn summarize_message(msg: &Value, index: usize) -> String {
     }
 
     // User messages — brief
-    let preview = &content[..content.len().min(60)];
+    let preview = safe_truncate(&content, 60);
     format!("[Turn {}: {} — {}…]", index + 1, role, preview.trim())
 }
 
