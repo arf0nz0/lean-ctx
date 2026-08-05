@@ -238,7 +238,7 @@ fn wait_semantic_progress(project_root: &str) -> bool {
     });
     let mut progress = ProgressIndicator::new("semantic");
     let start = Instant::now();
-    let timeout = Duration::from_mins(10);
+    let timeout = Duration::from_mins(60);
     loop {
         if handle.is_finished() {
             let _ = handle.join();
