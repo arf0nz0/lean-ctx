@@ -45,7 +45,7 @@ pub(crate) fn try_dedup(path: &str, content: &str, fresh: bool) -> Option<String
 }
 /// Invalidates deduplication state after a file write.
 pub(crate) fn on_file_write(path: &str) {
-    // TODO(#1400): wire on_file_write from ctx_edit/ctx_patch handlers.
+    // Wired from ctx_edit + ctx_patch post-write paths.
     dedup_wiring::invalidate(path);
 }
 

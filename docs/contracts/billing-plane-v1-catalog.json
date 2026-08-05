@@ -40,20 +40,7 @@
   },
   {
     "plan": "team",
-    "seats": 25,
-    "hosted_index_mb": 5000,
-    "managed_connectors": 5,
-    "private_registry": true,
-    "sso_oidc": false,
-    "sso_scim": false,
-    "audit_retention_days": 90,
-    "revenue_share": true,
-    "supporter": true,
-    "cloud_sync": true
-  },
-  {
-    "plan": "business",
-    "seats": 50,
+    "seats": 4294967295,
     "hosted_index_mb": 20000,
     "managed_connectors": 10,
     "private_registry": true,

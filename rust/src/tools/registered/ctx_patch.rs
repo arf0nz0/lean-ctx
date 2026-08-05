@@ -426,12 +426,11 @@ fn apply_one(
     params: &crate::tools::ctx_patch::PatchParams,
 ) -> Result<String, ErrorData> {
     let path = params.path.clone();
-    tokio::task::block_in_place(|| {
+    {
         let cache_lock = ctx
             .cache
             .as_ref()
             .ok_or_else(|| ErrorData::internal_error("cache not available", None))?;
-        let rt = tokio::runtime::Handle::current();
 
         // Serialize edits to the SAME file via the shared per-file lock (the same
         // registry ctx_edit/ctx_read use), so anchored and str_replace edits of
@@ -456,15 +455,13 @@ fn apply_one(
             }
         };
 
-        let last_mode = match rt.block_on(tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            cache_lock.read(),
-        )) {
-            Ok(cache) => cache
+        let last_mode = match crate::server::bounded_lock::read(cache_lock, "ctx_patch cache read")
+        {
+            Some(cache) => cache
                 .get(&path)
                 .map(|e| e.last_mode.clone())
                 .unwrap_or_default(),
-            Err(_) => String::new(),
+            None => String::new(),
         };
 
         // Heavy disk I/O — no global cache lock held here.
@@ -473,33 +470,29 @@ fn apply_one(
         crate::tools::ctx_patch::record_outcome(params, &last_mode, &output, &effect);
 
         if !matches!(effect, crate::tools::ctx_edit::CacheEffect::None) {
-            match rt.block_on(tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                cache_lock.write(),
-            )) {
-                Ok(mut cache) => {
+            crate::tools::ctx_read::dedup_hook::on_write(&path);
+            match crate::server::bounded_lock::write(cache_lock, "ctx_patch cache write") {
+                Some(mut cache) => {
                     crate::tools::ctx_edit::apply_cache_effect(&mut cache, &path, effect);
                 }
-                Err(_) => {
+                None => {
                     tracing::warn!(
-                        "ctx_patch: cache write-lock timeout (5s) applying post-edit cache effect for {path}"
+                        "ctx_patch: cache write-lock timeout applying effect for {path}"
                     );
                 }
             }
         }
 
         if let Some(session_lock) = ctx.session.as_ref() {
-            let guard = rt.block_on(tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                session_lock.write(),
-            ));
-            if let Ok(mut session) = guard {
+            if let Some(mut session) =
+                crate::server::bounded_lock::write(session_lock, "ctx_patch session write")
+            {
                 session.mark_modified(&path);
             }
         }
 
         Ok(output)
-    })
+    }
 }
 
 /// Handle `op="replace_symbol"` by translating to `ctx_refactor`'s
@@ -615,11 +608,9 @@ fn handle_replace_all(
         .map_err(|e| ErrorData::internal_error(format!("write failed: {e}"), None))?;
 
     if let Some(cache) = ctx.cache.as_ref() {
-        let rt = tokio::runtime::Handle::current();
-        if let Ok(mut c) = rt.block_on(tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            cache.write(),
-        )) {
+        if let Some(mut c) =
+            crate::server::bounded_lock::write(cache, "ctx_patch replace_all cache invalidate")
+        {
             c.invalidate(&path);
         }
     }

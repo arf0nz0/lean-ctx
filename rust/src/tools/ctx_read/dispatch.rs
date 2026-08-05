@@ -2,7 +2,22 @@ use super::{
     CrpMode, HookPoint, PluginManager, ReadMode, ReadOutput, ReadTuning, SessionCache,
     count_tokens, dedup_hook, handle_with_options_inner, kernel, protocol,
 };
+const MAX_RELAY_CONTENT_BYTES: usize = 8192;
 
+/// Modes whose compressed output is useful for cross-agent relay.
+const RELAY_ELIGIBLE_MODES: &[&str] = &["map", "map:v2", "signatures", "signatures:v2"];
+
+/// Extract relay-eligible content from a read result.
+fn relay_eligible_content(result: &ReadOutput) -> (Option<&str>, Option<&str>) {
+    let mode = result.resolved_mode.as_str();
+    if RELAY_ELIGIBLE_MODES.iter().any(|m| mode.starts_with(m))
+        && result.content.len() <= MAX_RELAY_CONTENT_BYTES
+    {
+        (Some(&result.content), Some(mode))
+    } else {
+        (None, None)
+    }
+}
 /// Reads a file through the cache and applies the requested compression mode.
 pub fn handle(cache: &mut SessionCache, path: &str, mode: &str, crp_mode: CrpMode) -> String {
     handle_with_options(cache, path, mode, false, crp_mode, None)
@@ -276,8 +291,6 @@ fn handle_with_options_resolved_preread(
         && let Some((hash, mtime)) = delivery_metadata
         && let Some(stub) = try_cross_agent_stub(path, mode, hash, mtime)
     {
-        cache.store(path, &stub.content);
-        cache.mark_full_delivered(path);
         return stub;
     }
 
@@ -350,7 +363,16 @@ fn handle_with_options_resolved_preread(
         && let Some((hash, mtime)) = delivery_metadata
     {
         let line_count = cache.get(path).map_or(0, |entry| entry.line_count as u32);
-        record_cross_agent_delivery(path, hash, mtime, line_count, result.output_tokens);
+        let relay = relay_eligible_content(&result);
+        record_cross_agent_delivery(
+            path,
+            hash,
+            mtime,
+            line_count,
+            result.output_tokens,
+            relay.0,
+            relay.1,
+        );
     }
 
     // SSOT via [`ReadMode`] (#528): lossy summaries may elide shared blocks.
@@ -684,7 +706,7 @@ pub(crate) fn try_cross_agent_stub(
     }
     let current_agent = std::env::var("CURSOR_TASK_ID")
         .or_else(|_| std::env::var("CLAUDECODE"))
-        .unwrap_or_else(|_| "local-agent".to_string());
+        .unwrap_or_else(|_| format!("local-{}", std::process::id()));
     let current_conversation = crate::core::conversation::current_conversation_id()
         .unwrap_or_else(|| current_agent.clone());
     let reg = crate::core::ocla::OclaRegistry::global();
@@ -706,6 +728,25 @@ pub(crate) fn try_cross_agent_stub(
     })?;
 
     let short = protocol::shorten_path(path);
+
+    if let Some(ref content) = record.relay_content {
+        let relay_mode = record.relay_mode.as_deref().unwrap_or("map");
+        let header = format!(
+            "{short} [relayed from {} · {relay_mode} · {}L]",
+            record.agent_id, record.line_count,
+        );
+        let body = format!("{header}\n{content}");
+        let tokens = count_tokens(&body);
+        reg.delivery_registry
+            .record_stub_served(&record, tokens as u64);
+        return Some(ReadOutput {
+            content: body,
+            resolved_mode: "cross-agent-relay".into(),
+            output_tokens: tokens,
+            is_cache_hit: true,
+        });
+    }
+
     let stub = format!(
         "{short} [cross-agent · {lines}L · read by {agent} · use fresh=true to force]",
         lines = record.line_count,
@@ -728,13 +769,15 @@ pub(crate) fn record_cross_agent_delivery(
     mtime: u64,
     line_count: u32,
     tokens: usize,
+    relay_content: Option<&str>,
+    relay_mode: Option<&str>,
 ) {
     if !crate::core::config::Config::load().ocla.delivery_enabled() {
         return;
     }
     let agent_id = std::env::var("CURSOR_TASK_ID")
         .or_else(|_| std::env::var("CLAUDECODE"))
-        .unwrap_or_else(|_| "local-agent".to_string());
+        .unwrap_or_else(|_| format!("local-{}", std::process::id()));
     let conversation_id =
         crate::core::conversation::current_conversation_id().unwrap_or_else(|| agent_id.clone());
     let entry = crate::core::ocla::types::DeliveryEntry {
@@ -745,6 +788,10 @@ pub(crate) fn record_cross_agent_delivery(
         agent_id,
         conversation_id,
         mtime,
+        relay_content: relay_content
+            .filter(|c| c.len() <= MAX_RELAY_CONTENT_BYTES)
+            .map(str::to_string),
+        relay_mode: relay_mode.map(str::to_string),
     };
     crate::daemon_client::try_delivery_record_blocking(&entry);
     let reg = crate::core::ocla::OclaRegistry::global();
@@ -797,10 +844,10 @@ mod tests {
         crate::test_env::remove_var("CLAUDECODE");
         let id1 = std::env::var("CURSOR_TASK_ID")
             .or_else(|_| std::env::var("CLAUDECODE"))
-            .unwrap_or_else(|_| "local-agent".to_string());
+            .unwrap_or_else(|_| format!("local-{}", std::process::id()));
         let id2 = std::env::var("CURSOR_TASK_ID")
             .or_else(|_| std::env::var("CLAUDECODE"))
-            .unwrap_or_else(|_| "local-agent".to_string());
+            .unwrap_or_else(|_| format!("local-{}", std::process::id()));
         assert_eq!(id1, id2, "fallback agent ID must be deterministic");
         assert!(!id1.contains("proc:"), "must not contain PID");
     }
@@ -824,6 +871,20 @@ mod tests {
         assert!(
             after > before,
             "stub cache hit must increment central telemetry"
+        );
+    }
+
+    #[test]
+    fn relay_does_not_poison_session_cache() {
+        let mut cache = SessionCache::new();
+        let path = "/tmp/test_relay_poison.rs";
+        cache.store(path, "original content");
+        assert_eq!(
+            cache
+                .get(path)
+                .map(|e| e.compressed_outputs.contains_key("cross-agent-relay")),
+            Some(false),
+            "cross-agent-relay must not exist in session cache"
         );
     }
 }

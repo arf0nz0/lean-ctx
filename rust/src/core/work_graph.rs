@@ -169,7 +169,7 @@ impl BoundedWorkGraph {
                 depth: 0,
             },
         );
-        Ok(self.nodes.get(&node_id).unwrap())
+        Ok(self.nodes.get(&node_id).expect("root node inserted above"))
     }
 
     /// Delegate work to a child node. Validates budget inheritance and fan-out.
@@ -239,7 +239,10 @@ impl BoundedWorkGraph {
             .remove(&child_node_id)
             .map_or(0, |budget| budget.tokens_allocated);
         self.record_chain_allocation(&chain_id, pending_tokens, child_tokens_allocated, new_depth);
-        Ok(self.nodes.get(&child_node_id).unwrap())
+        Ok(self
+            .nodes
+            .get(&child_node_id)
+            .expect("child node inserted above"))
     }
 
     /// Allocates budget for a child node using cascade rules.

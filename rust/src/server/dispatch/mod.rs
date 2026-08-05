@@ -497,7 +497,8 @@ impl LeanCtxServer {
             .and_then(|r| crate::core::levenshtein::closest(name, r.names()))
             .map(|s| format!(" — did you mean '{s}'?"))
             .unwrap_or_default();
-        Err(ErrorData::invalid_params(
+        Err(ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
             format!("Unknown tool: {name}{suggestion}"),
             None,
         ))

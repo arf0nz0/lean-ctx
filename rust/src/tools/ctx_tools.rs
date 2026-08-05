@@ -22,19 +22,24 @@ const DISABLED_HINT: &str = "gateway is disabled. Enable it in ~/.lean-ctx/confi
      args = [\"/path/to/dir\"]";
 
 /// Runtime adapter so the `rt.block_on(...)` call sites stay identical whether
-/// we run inside the MCP server's runtime (ambient `Handle`) or from the CLI
-/// `call` path, which has no ambient runtime and needs its own.
-enum Rt {
-    Handle(tokio::runtime::Handle),
-    Owned(tokio::runtime::Runtime),
-}
+/// Dedicated single-threaded runtime for gateway async calls.
+///
+/// Tool handlers run inside `spawn_blocking` (#1018) where `Handle::block_on`
+/// panics. Always create a fresh current_thread runtime — it is independent of
+/// the server's multi-thread runtime and safe from any calling context.
+struct Rt(tokio::runtime::Runtime);
 
 impl Rt {
+    fn new() -> Result<Self, String> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map(Self)
+            .map_err(|e| format!("failed to start runtime for gateway: {e}"))
+    }
+
     fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
-        match self {
-            Rt::Handle(h) => h.block_on(fut),
-            Rt::Owned(r) => r.block_on(fut),
-        }
+        self.0.block_on(fut)
     }
 }
 
@@ -61,16 +66,7 @@ pub fn run(args: &Map<String, Value>, project_root: &str) -> Result<String, Stri
     mcp_catalog::adapters::compression::ensure_registered(&cfg.gateway);
 
     let action = args.get("action").and_then(Value::as_str).unwrap_or("find");
-    let rt = match tokio::runtime::Handle::try_current() {
-        Ok(h) => Rt::Handle(h), // MCP path: dispatch already did block_in_place
-        Err(_) => Rt::Owned(
-            // CLI path: no ambient runtime → make a one-shot current_thread one
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("failed to start runtime for gateway: {e}"))?,
-        ),
-    };
+    let rt = Rt::new()?;
 
     match action {
         "find" => {

@@ -284,6 +284,37 @@ impl SigBackend {
     }
 }
 
+/// Per-session blocklist for tree-sitter languages that panicked during parsing.
+/// Once a language panics, all subsequent calls for that extension skip straight
+/// to the regex fallback — no repeated catch_unwind overhead.
+#[cfg(feature = "tree-sitter")]
+mod ts_blocklist {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    static BLOCKED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+
+    fn lock() -> std::sync::MutexGuard<'static, Option<HashSet<String>>> {
+        match BLOCKED.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    pub(super) fn is_blocked(ext: &str) -> bool {
+        lock().as_ref().is_some_and(|set| set.contains(ext))
+    }
+
+    pub(super) fn block(ext: &str) {
+        lock()
+            .get_or_insert_with(HashSet::new)
+            .insert(ext.to_string());
+    }
+}
+
+#[cfg(feature = "tree-sitter")]
+use ts_blocklist::{block as block_ts_language, is_blocked as is_ts_language_blocked};
+
 pub fn extract_signatures(content: &str, file_ext: &str) -> Vec<Signature> {
     let (sigs, backend) = extract_signatures_with_backend(content, file_ext);
     let is_tree_sitter = matches!(backend, SigBackend::TreeSitter);
@@ -313,10 +344,26 @@ pub fn extract_signatures_with_backend(
         // to the regex extractors instead of returning the empty result, which
         // would otherwise suppress signatures the regex fallback can still
         // recover (e.g. constructs the query does not capture).
-        if let Some(sigs) = super::signatures_ts::extract_signatures_ts(content, file_ext)
-            && !sigs.is_empty()
-        {
-            return (sigs, SigBackend::TreeSitter);
+        //
+        // Wrapped in catch_unwind: tree-sitter grammars can panic on certain
+        // files (e.g. "range start index N out of range for slice of length 0").
+        // A single panic must not cascade — it falls through to the regex
+        // extractor, and the language is blocklisted for the rest of the session.
+        if !is_ts_language_blocked(file_ext) {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                super::signatures_ts::extract_signatures_ts(content, file_ext)
+            })) {
+                Ok(Some(sigs)) if !sigs.is_empty() => {
+                    return (sigs, SigBackend::TreeSitter);
+                }
+                Err(_) => {
+                    block_ts_language(file_ext);
+                    eprintln!(
+                        "[lean-ctx] tree-sitter panicked for .{file_ext} — using regex fallback"
+                    );
+                }
+                _ => {}
+            }
         }
     }
 

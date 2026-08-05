@@ -147,8 +147,15 @@ pub fn resolve(ctx: &AutoModeContext) -> ResolvedMode {
     let r = resolve_inner(ctx);
 
     // Quality loop (#494), signal 2: this mode keeps producing edit failures
-    // for this file type — compression here is a proven net loss, use full.
+    // for this file type — compression here is a proven net loss. Instead of
+    // jumping straight to `full`, try `signatures` first (the next-safest
+    // compressed mode). This preserves ~85% compression when only `map` is risky.
     if r.mode != "full" && crate::core::edit_quality::is_risky_mode(ctx.path, &r.mode) {
+        if r.mode != "signatures"
+            && !crate::core::edit_quality::is_risky_mode(ctx.path, "signatures")
+        {
+            return resolved("signatures", "edit_quality_fallback");
+        }
         return resolved("full", "edit_quality_penalty");
     }
     r
@@ -197,7 +204,10 @@ fn resolve_inner(ctx: &AutoModeContext) -> ResolvedMode {
     }
 
     if is_config_or_data(ext, ctx.path) {
-        return resolved("full", "config_data");
+        if ctx.token_count <= 1000 {
+            return resolved("full", "config_data");
+        }
+        return resolved("map", "config_data_large");
     }
 
     // Active compiler error (#499): the agent reads this file to fix the
@@ -450,6 +460,9 @@ fn heuristic_mode(ext: &str, token_count: usize, structure_first: bool) -> Strin
         }
         return "aggressive".to_string();
     }
+    if token_count > 2000 && is_prose(ext) {
+        return "aggressive".to_string();
+    }
     // Large code files need an overview rather than an API-only surface.
     if token_count > 6000 && is_code(ext) {
         return "map".to_string();
@@ -463,9 +476,10 @@ fn heuristic_mode(ext: &str, token_count: usize, structure_first: bool) -> Strin
     if structure_first && token_count > 500 && is_code(ext) {
         return "map".to_string();
     }
-    // Medium code files are common during exploration. Keep the tiny-file floor
-    // intact, but avoid delivering full bodies once signatures can localize the
-    // relevant symbol cheaply.
+    // Medium code files (500–6000 tok): use `signatures` for compression.
+    // Safe because tree-sitter is wrapped in catch_unwind with per-language
+    // blocklist fallback to regex — a panic degrades to regex signatures,
+    // never crashes the session.
     if token_count > 500 && is_code(ext) {
         return "signatures".to_string();
     }
@@ -527,6 +541,26 @@ fn is_code(ext: &str) -> bool {
             | "bash"
             | "svelte"
             | "vue"
+            | "astro"
+            | "mdx"
+            | "njk"
+            | "hbs"
+            | "ejs"
+            | "erb"
+            | "jinja"
+            | "jinja2"
+            | "twig"
+            | "pug"
+            | "slim"
+            | "haml"
+            | "liquid"
+    )
+}
+
+fn is_prose(ext: &str) -> bool {
+    matches!(
+        ext,
+        "md" | "mdx" | "txt" | "rst" | "adoc" | "org" | "tex" | "html" | "htm"
     )
 }
 
@@ -848,9 +882,10 @@ mod tests {
     fn heuristic_structure_first_keeps_tiny_and_prose_full() {
         // Below the 500-token floor `full` is already best.
         assert_eq!(heuristic_mode("rs", 400, true), "full");
-        // Prose / markup is never structure-first mapped — it benefits from
-        // `aggressive` at large sizes, not code-oriented `map`.
-        assert_eq!(heuristic_mode("md", 4000, true), "full");
+        // Prose / markup now gets `aggressive` above 2000 tokens.
+        assert_eq!(heuristic_mode("md", 4000, true), "aggressive");
+        assert_eq!(heuristic_mode("md", 1500, true), "full");
+        assert_eq!(heuristic_mode("txt", 3000, true), "aggressive");
         assert_eq!(heuristic_mode("txt", 1000, true), "full");
     }
 
@@ -858,7 +893,9 @@ mod tests {
     fn code_and_data_extensions_cover_progressive_formats() {
         for ext in [
             "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "c", "cpp", "h", "rb", "swift",
-            "kt", "scala", "toml", "yaml", "yml", "json", "sh", "bash",
+            "kt", "scala", "toml", "yaml", "yml", "json", "sh", "bash", "svelte", "vue", "astro",
+            "mdx", "njk", "hbs", "ejs", "erb", "jinja", "jinja2", "twig", "pug", "slim", "haml",
+            "liquid",
         ] {
             assert!(
                 is_code(ext),

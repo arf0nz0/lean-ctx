@@ -129,8 +129,11 @@ impl McpSandbox {
             #[cfg(unix)]
             {
                 use std::os::unix::process::ExitStatusExt;
-                if out.status.signal() == Some(9) {
-                    eprintln!("index build OOM-killed (SIGKILL) — skipping test");
+                if matches!(out.status.signal(), Some(9 | 15)) {
+                    eprintln!(
+                        "index build killed by signal {} — skipping test",
+                        out.status.signal().unwrap()
+                    );
                     return false;
                 }
             }

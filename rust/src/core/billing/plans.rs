@@ -34,12 +34,9 @@ pub enum Plan {
     /// local capability and none of the Team/Cloud coordination entitlements; it
     /// sits additively between Supporter and Team (`supporter ⊂ pro ⊂ team`).
     Pro,
-    /// Shared team/org coordination: seats, shared knowledge, hosted retrieval.
+    /// Shared team/org coordination: seats, shared knowledge, hosted retrieval,
+    /// OIDC SSO, 1-year audit window. (Absorbed the former Business tier in v3.9.)
     Team,
-    /// Self-serve governance (GL #460/#533): everything in Team plus OIDC SSO
-    /// (`sso_oidc`), a 1-year audit window and higher flat quotas — at a flat
-    /// price, no sales motion. SAML/SCIM stay Enterprise.
-    Business,
     /// Governance at scale: SSO/SCIM, audit retention, private registries.
     Enterprise,
 }
@@ -53,13 +50,12 @@ impl Plan {
             Plan::Supporter,
             Plan::Pro,
             Plan::Team,
-            Plan::Business,
             Plan::Enterprise,
         ]
     }
 
     /// Ordinal rank in the ascending [`Plan::all`] order (Free = 0 …
-    /// Enterprise = 5). Lets callers pick the *higher* of two plans — e.g. the
+    /// Enterprise = 4). Lets callers pick the *higher* of two plans — e.g. the
     /// effective-plan resolver elevating to an offline license's grant.
     #[must_use]
     pub fn rank(self) -> usize {
@@ -74,7 +70,6 @@ impl Plan {
             Plan::Supporter => "supporter",
             Plan::Pro => "pro",
             Plan::Team => "team",
-            Plan::Business => "business",
             Plan::Enterprise => "enterprise",
         }
     }
@@ -87,8 +82,7 @@ impl Plan {
         match s.trim().to_ascii_lowercase().as_str() {
             "supporter" | "sponsor" => Plan::Supporter,
             "pro" => Plan::Pro,
-            "team" => Plan::Team,
-            "business" | "biz" => Plan::Business,
+            "team" | "business" | "biz" => Plan::Team,
             "enterprise" | "ent" => Plan::Enterprise,
             _ => Plan::Free,
         }
@@ -148,27 +142,7 @@ impl Plan {
             },
             Plan::Team => Entitlements {
                 plan: self,
-                seats: 25,
-                hosted_index_mb: 5_000,
-                managed_connectors: 5,
-                private_registry: true,
-                // Catalog-wise Team has no SSO; orgs that configured OIDC while
-                // it was Team-gated are grandfathered at the enforcement edge
-                // (control plane keeps existing configs working).
-                sso_oidc: false,
-                sso_scim: false,
-                audit_retention_days: 90,
-                revenue_share: true,
-                supporter: true,
-                cloud_sync: true,
-            },
-            // Business (GL #460/#533): self-serve governance at $149/mo flat.
-            // Team's coordination plus OIDC SSO and a 1-year audit window with
-            // doubled flat quotas — without the negotiated Enterprise surface
-            // (SAML/SCIM, unbounded quotas, 10-year audit).
-            Plan::Business => Entitlements {
-                plan: self,
-                seats: 50,
+                seats: UNBOUNDED,
                 hosted_index_mb: 20_000,
                 managed_connectors: 10,
                 private_registry: true,
@@ -214,7 +188,7 @@ pub struct Entitlements {
     /// Private extension/persona registry access.
     pub private_registry: bool,
     /// Self-serve OIDC SSO for the org (GL #482/#533) — sign-in via the org's
-    /// own IdP, configured without a sales motion. Business and Enterprise.
+    /// own IdP, configured without a sales motion. Team and Enterprise.
     pub sso_oidc: bool,
     /// SAML SSO + SCIM provisioning (the negotiated Enterprise surface).
     pub sso_scim: bool,
@@ -290,14 +264,12 @@ mod tests {
 
     #[test]
     fn min_plan_for_returns_cheapest_unlocking_plan() {
-        // Hosted capabilities map to their cheapest unlocking tier.
         assert_eq!(min_plan_for("cloud_sync"), Some(Plan::Pro));
         assert_eq!(min_plan_for("private_registry"), Some(Plan::Team));
         assert_eq!(min_plan_for("revenue_share"), Some(Plan::Team));
-        assert_eq!(min_plan_for("sso_oidc"), Some(Plan::Business));
+        assert_eq!(min_plan_for("sso_oidc"), Some(Plan::Team));
         assert_eq!(min_plan_for("sso_scim"), Some(Plan::Enterprise));
         assert_eq!(min_plan_for("supporter"), Some(Plan::Supporter));
-        // Local-always-on and unknown/local features are never gated.
         assert_eq!(min_plan_for("read"), None);
         assert_eq!(min_plan_for("some_unknown_local_thing"), None);
         for feature in LOCAL_ALWAYS_ON_FEATURES {
@@ -316,12 +288,12 @@ mod tests {
         }
         assert_eq!(Plan::parse("TEAM"), Plan::Team);
         assert_eq!(Plan::parse("garbage"), Plan::Free);
-        // `pro` is now its own plan; `supporter`/`sponsor` are the voluntary tier.
         assert_eq!(Plan::parse("pro"), Plan::Pro);
         assert_eq!(Plan::parse("supporter"), Plan::Supporter);
         assert_eq!(Plan::parse("Sponsor"), Plan::Supporter);
-        assert_eq!(Plan::parse("business"), Plan::Business);
-        assert_eq!(Plan::parse("biz"), Plan::Business);
+        // Legacy backward-compat: "business"/"biz" map to Team.
+        assert_eq!(Plan::parse("business"), Plan::Team);
+        assert_eq!(Plan::parse("biz"), Plan::Team);
     }
 
     #[test]
@@ -331,51 +303,22 @@ mod tests {
         assert!(!plan.entitlements().sso_oidc);
     }
 
-    /// GL #533: Business sits strictly between Team and Enterprise — adds
-    /// self-serve OIDC SSO and a 1-year audit window, but never the negotiated
-    /// Enterprise surface (SAML/SCIM, unbounded quotas).
     #[test]
-    fn business_is_team_plus_self_serve_governance() {
+    fn team_includes_self_serve_governance() {
         let team = Plan::Team.entitlements();
-        let biz = Plan::Business.entitlements();
         let ent = Plan::Enterprise.entitlements();
 
-        // Strictly more than Team…
-        assert!(biz.seats > team.seats && biz.seats < ent.seats);
-        assert!(biz.hosted_index_mb > team.hosted_index_mb);
-        assert!(biz.managed_connectors > team.managed_connectors);
-        assert!(biz.audit_retention_days > team.audit_retention_days);
-        assert!(biz.audit_retention_days < ent.audit_retention_days);
-
-        // The defining additions: OIDC SSO yes, SAML/SCIM no.
-        assert!(biz.sso_oidc && !biz.sso_scim);
-        assert!(entitlement_allows(Plan::Business, "sso_oidc"));
-        assert!(!entitlement_allows(Plan::Business, "sso_scim"));
-        // Team's catalog has no SSO (existing configs grandfather at the edge).
-        assert!(!team.sso_oidc);
-        // Enterprise keeps both.
+        assert!(team.sso_oidc && !team.sso_scim);
+        assert!(entitlement_allows(Plan::Team, "sso_oidc"));
+        assert!(!entitlement_allows(Plan::Team, "sso_scim"));
         assert!(ent.sso_oidc && ent.sso_scim);
 
-        // Everything Team has, Business has too.
-        assert!(biz.private_registry && biz.revenue_share);
-        assert!(biz.supporter && biz.cloud_sync);
-        // Local features are never gated on Business either.
-        for feature in LOCAL_ALWAYS_ON_FEATURES {
-            assert!(entitlement_allows(Plan::Business, feature));
-        }
-    }
-
-    #[test]
-    fn business_plan_has_sso_oidc() {
-        let business = Plan::Business.entitlements();
-        assert!(
-            business.sso_oidc,
-            "Business must enable self-serve OIDC SSO"
-        );
-        assert!(
-            !business.sso_scim,
-            "SCIM remains a negotiated Enterprise entitlement"
-        );
+        assert!(team.private_registry && team.revenue_share);
+        assert!(team.supporter && team.cloud_sync);
+        assert_eq!(team.hosted_index_mb, 20_000);
+        assert_eq!(team.managed_connectors, 10);
+        assert_eq!(team.audit_retention_days, 365);
+        assert!(team.audit_retention_days < ent.audit_retention_days);
     }
 
     #[test]
@@ -393,8 +336,8 @@ mod tests {
     }
 
     #[test]
-    fn min_plan_for_sso_oidc_is_business() {
-        assert_eq!(min_plan_for("sso_oidc"), Some(Plan::Business));
+    fn min_plan_for_sso_oidc_is_team() {
+        assert_eq!(min_plan_for("sso_oidc"), Some(Plan::Team));
     }
 
     #[test]
@@ -490,11 +433,10 @@ mod tests {
         let team = Plan::Team.entitlements();
         let ent = Plan::Enterprise.entitlements();
         assert!(team.private_registry && team.revenue_share);
+        assert!(team.sso_oidc && !team.sso_scim);
         assert!(ent.sso_scim && ent.private_registry);
         assert!(entitlement_allows(Plan::Enterprise, "sso_scim"));
         assert!(!entitlement_allows(Plan::Team, "sso_scim"));
-        // `supporter` is monotonic along the chain: every paid plan is a
-        // supporter; only Free is not.
         assert!(!Plan::Free.entitlements().supporter);
         assert!(Plan::Supporter.entitlements().supporter);
         assert!(team.supporter && ent.supporter);

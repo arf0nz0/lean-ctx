@@ -94,7 +94,10 @@ fn tarjan_scc(adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
             }
 
             if edge_i < adj[v].len() {
-                call_stack.last_mut().unwrap().1 += 1;
+                call_stack
+                    .last_mut()
+                    .expect("call_stack non-empty in Tarjan loop")
+                    .1 += 1;
                 let w = adj[v][edge_i];
                 if indices[w] == UNVISITED {
                     call_stack.push((w, 0));

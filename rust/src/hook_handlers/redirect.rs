@@ -6,7 +6,8 @@
 
 use super::{
     HOOK_STDIN_TIMEOUT, build_dual_allow_output, dedup, is_disabled, is_harden_active,
-    is_shadow_mode_active, log_shadow_intercept, payload, read_stdin_with_timeout, resolve_binary,
+    is_shadow_mode_active, is_shadow_surface_active, log_shadow_intercept, payload,
+    read_stdin_with_timeout, resolve_binary,
 };
 use crate::core::debug_log::{self, Route};
 use std::io::Read;
@@ -40,6 +41,13 @@ pub(super) fn classify_redirect(tool_name: &str) -> RedirectKind {
 /// printing, so `handle_redirect` can run it under the fail-open timeout (#1035).
 pub(super) fn compute_redirect() -> String {
     if is_disabled() {
+        let _ = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT);
+        return build_dual_allow_output();
+    }
+
+    // Shadow-only tool surface: native Read/Grep/Glob work transparently
+    // without redirect compression. The hooks only observe for metrics.
+    if is_shadow_surface_active() {
         let _ = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT);
         return build_dual_allow_output();
     }

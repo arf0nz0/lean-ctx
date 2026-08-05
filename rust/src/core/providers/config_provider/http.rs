@@ -97,7 +97,7 @@ pub fn interpolate(template: &str, params: &HashMap<String, String>) -> String {
         result = result.replace(&format!("{{{key}}}"), value);
     }
     // Remove unresolved placeholders (optional params not provided)
-    let re = regex::Regex::new(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}").unwrap();
+    let re = regex::Regex::new(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}").expect("valid placeholder regex");
     re.replace_all(&result, "").to_string()
 }
 

@@ -448,6 +448,8 @@ async fn delivery_check(Json(req): Json<DeliveryCheckRequest>) -> (StatusCode, J
                     "conversation_id": record.conversation_id,
                     "read_at": record.read_at,
                     "fresh": record.fresh,
+                    "relay_content": record.relay_content,
+                    "relay_mode": record.relay_mode,
                 })),
             )
         }
@@ -501,6 +503,8 @@ async fn delivery_stats() -> Json<Value> {
         "tokens_saved": stats.tokens_saved,
         "unique_paths": stats.unique_paths,
         "unique_agents": stats.unique_agents,
+        "relay_served": stats.relay_served,
+        "relay_tokens_saved": stats.relay_tokens_saved,
     }))
 }
 

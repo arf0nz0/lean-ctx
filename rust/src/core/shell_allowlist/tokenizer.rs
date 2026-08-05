@@ -272,6 +272,14 @@ pub(super) fn extract_base_from_segment(segment: &str) -> String {
         .to_string()
 }
 
+/// Shell builtins that legitimately export or mutate environment variables.
+/// A segment beginning with one of these (`export PATH=…`, `readonly FOO=bar`)
+/// is not a bare inline `PATH=… cmd` hijack — skip the builtin and any
+/// following `VAR=value` tokens so export-only segments contribute no leaf
+/// command and `export PATH=… ; python3 …` resolves to `python3`.
+const ENV_SETTING_BUILTINS: &[&str] =
+    &["export", "unset", "readonly", "local", "declare", "typeset"];
+
 /// Skip leading KEY=VALUE environment variable assignments.
 /// Uses quote-aware scanning so `FOO="bar baz" git status` correctly
 /// skips the entire `FOO="bar baz"` token.
@@ -291,6 +299,11 @@ pub(super) fn skip_env_assignments(segment: &str) -> &str {
             .chars()
             .filter(|c| *c != '"' && *c != '\'')
             .collect();
+        let base_token = unquoted.rsplit('/').next().unwrap_or(unquoted.as_str());
+        if ENV_SETTING_BUILTINS.contains(&base_token) {
+            rest = &rest_trimmed[end..];
+            continue;
+        }
         if unquoted.contains('=')
             && !unquoted.starts_with('-')
             && !unquoted.starts_with('/')

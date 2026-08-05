@@ -183,7 +183,8 @@ fn assert_lazy_core_surface(tools: &[String], client: &str) {
         client,
         lean_ctx::server::tool_visibility::CandidateSet::LazyCore,
     );
-    for expected in lean_ctx::tool_defs::CORE_TOOL_NAMES {
+    let expected_names: &[&str] = lean_ctx::tool_defs::CORE_TOOL_NAMES;
+    for expected in expected_names {
         if *expected == "ctx_patch" && quirks.hide_ctx_patch {
             assert!(
                 !tools.iter().any(|t| t == expected),
@@ -233,7 +234,13 @@ fn cursor_covered_client_gets_anchor_and_lazy_core() {
         !has_skeleton(&instructions),
         "cursor instructions must NOT repeat the full skeleton.\n{instructions}"
     );
-    assert_lazy_core_surface(&tools, "cursor");
+    // Shadow-only surface: hook-covered clients (Cursor) only get ctx_call.
+    // The full tool surface is reached transparently through installed hooks.
+    assert_eq!(
+        tools,
+        vec!["ctx_call".to_string()],
+        "cursor with shadow-only surface must advertise only ctx_call: {tools:?}"
+    );
 }
 
 #[test]

@@ -136,7 +136,7 @@ pub fn contract_docs() -> Vec<ContractDoc> {
         doc("billing-plane-v2", "billing-plane-v2.md", 2, Stable),
         // v2 = v1 + storageQuotaBytes/roiWebhookUrl (GL #387/#388); v1 stays frozen.
         doc("billing-plane-v3", "billing-plane-v3.md", 3, Stable),
-        // v3 = v1 + business plan + sso_oidc entitlement (GL #460/#533); additive.
+        // v3 = v1 + sso_oidc entitlement (GL #460/#533); additive. Business merged into Team in v3.9.
         doc("evidence-bundle", "evidence-bundle-v1.md", 1, Stable),
         // Offline-verifiable audit evidence ZIP (GL #425, H3 Epic A).
         doc(

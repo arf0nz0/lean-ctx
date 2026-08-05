@@ -24,7 +24,7 @@ pub(crate) use crate::core::rules_canonical::{COMPRESSION_BLOCK_END, COMPRESSION
 /// The agents that auto-load the shared project `AGENTS.md`. Kept in sync with
 /// `core::rules_overhead::collect_rules_files`, which attributes `AGENTS.md` to
 /// the same set.
-pub(crate) const AGENTS_MD_READERS: &[&str] = &["cursor", "codex"];
+pub(crate) const AGENTS_MD_READERS: &[&str] = &["cursor", "codex", "opencode"];
 
 /// True when `content` carries a *full* lean-ctx payload — the canonical rule
 /// set (the `RULES_MARKER` header) or the compression/output-style block —
@@ -96,7 +96,78 @@ pub(crate) fn cursor_hooks_json_covers(hooks_json: &Path) -> bool {
 /// HookCovered profile removes.
 pub(crate) fn client_hook_covered(client_name: &str, home: &Path) -> bool {
     let lower = client_name.to_lowercase();
-    lower.contains("cursor") && cursor_hooks_cover_native_tools(home)
+    if lower.contains("cursor") {
+        return cursor_hooks_cover_native_tools(home);
+    }
+    if lower.contains("codex") {
+        return codex_hooks_cover_native_tools(home);
+    }
+    if lower.contains("windsurf") {
+        return windsurf_hooks_cover_native_tools(home);
+    }
+    false
+}
+
+/// Codex hooks cover native tools when `~/.codex/hooks.json` has lean-ctx
+/// `deny` (Read/Grep/Glob) and `codex-pretooluse` (Bash) in PreToolUse.
+fn codex_hooks_cover_native_tools(home: &Path) -> bool {
+    let hooks_json = home.join(".codex").join("hooks.json");
+    let Ok(content) = std::fs::read_to_string(&hooks_json) else {
+        return false;
+    };
+    let Ok(v) = crate::core::jsonc::parse_jsonc(&content) else {
+        return false;
+    };
+    let Some(pre) = v.pointer("/hooks/PreToolUse").and_then(|p| p.as_array()) else {
+        return false;
+    };
+    let has_lean_ctx = |suffix: &str| {
+        pre.iter().any(|e| {
+            let in_command = e
+                .get("command")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.contains("lean-ctx") && c.contains(suffix));
+            let in_hooks_array = e
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .is_some_and(|hooks| {
+                    hooks.iter().any(|h| {
+                        h.get("command")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| c.contains("lean-ctx") && c.contains(suffix))
+                    })
+                });
+            in_command || in_hooks_array
+        })
+    };
+    has_lean_ctx("hook deny") && has_lean_ctx("hook codex-pretooluse")
+}
+
+/// Windsurf hooks cover native tools when
+/// `~/.codeium/windsurf/hooks.json` has lean-ctx `rewrite` + `redirect`
+/// in `pre_mcp_tool_use`.
+fn windsurf_hooks_cover_native_tools(home: &Path) -> bool {
+    let hooks_json = home.join(".codeium").join("windsurf").join("hooks.json");
+    let Ok(content) = std::fs::read_to_string(&hooks_json) else {
+        return false;
+    };
+    let Ok(v) = crate::core::jsonc::parse_jsonc(&content) else {
+        return false;
+    };
+    let Some(pre) = v
+        .pointer("/hooks/pre_mcp_tool_use")
+        .and_then(|p| p.as_array())
+    else {
+        return false;
+    };
+    let has_lean_ctx = |suffix: &str| {
+        pre.iter().any(|e| {
+            e.get("command")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.contains("lean-ctx") && c.contains(suffix))
+        })
+    };
+    has_lean_ctx("hook rewrite") && has_lean_ctx("hook redirect")
 }
 
 /// Codex's per-user config dir (`~/.codex`, or `$CODEX_HOME`).
@@ -146,6 +217,12 @@ pub(crate) fn client_autoloads_compression(client_name: &str, home: &Path) -> bo
     if lower.contains("codex") {
         return codex_present(home) && codex_compression_covered(home);
     }
+    if lower.contains("opencode") {
+        let opencode_dir = home.join(".config/opencode");
+        let dedicated = opencode_dir.join("rules/lean-ctx.md");
+        let shared = opencode_dir.join("AGENTS.md");
+        return file_has_compression(&dedicated) || file_has_compression(&shared);
+    }
     false
 }
 
@@ -163,6 +240,8 @@ fn file_has_canonical_rules(path: &Path) -> bool {
 /// Carrier per client (kept in sync with `rules_inject::targets`):
 ///   * Cursor → `~/.cursor/rules/lean-ctx.mdc` (canonical rules block)
 ///   * Codex → `$CODEX_HOME/instructions.md` (canonical rules block)
+///   * OpenCode → `~/.config/opencode/rules/lean-ctx.md` (dedicated) or
+///     `~/.config/opencode/AGENTS.md` (shared)
 ///
 /// Claude Code deliberately does NOT count: its `CLAUDE.md` block is the
 /// custom tool-mapping summary (`hooks/agents/claude.rs`), not the canonical
@@ -182,6 +261,15 @@ pub(crate) fn client_autoloads_rules(client_name: &str, home: &Path) -> bool {
     if lower.contains("codex") {
         return codex_present(home)
             && file_has_canonical_rules(&codex_dir(home).join("instructions.md"));
+    }
+    if lower.contains("opencode") {
+        // OpenCode loads rules from either:
+        // - ~/.config/opencode/AGENTS.md (shared mode)
+        // - ~/.config/opencode/rules/lean-ctx.md (dedicated mode)
+        let opencode_dir = home.join(".config/opencode");
+        let dedicated = opencode_dir.join("rules/lean-ctx.md");
+        let shared = opencode_dir.join("AGENTS.md");
+        return file_has_canonical_rules(&dedicated) || file_has_canonical_rules(&shared);
     }
     false
 }
@@ -366,6 +454,109 @@ mod tests {
         // Invalid JSON → fail closed (full guidance).
         std::fs::write(&hooks, "{ not json").unwrap();
         assert!(!cursor_hooks_cover_native_tools(home));
+    }
+
+    #[test]
+    fn codex_hook_coverage_requires_deny_and_pretooluse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        assert!(!client_hook_covered("codex-cli", home));
+
+        let codex_dir = home.join(".codex");
+        std::fs::create_dir_all(&codex_dir).expect("create .codex dir");
+        let hooks = codex_dir.join("hooks.json");
+
+        // deny only → NOT covered (need both deny + codex-pretooluse).
+        std::fs::write(
+            &hooks,
+            r#"{"hooks":{"PreToolUse":[
+                {"command":"/usr/local/bin/lean-ctx hook deny","matcher":"Read|Grep|Glob"}
+            ]}}"#,
+        )
+        .expect("write deny-only hooks");
+        assert!(!codex_hooks_cover_native_tools(home));
+
+        // Both deny + codex-pretooluse → covered.
+        std::fs::write(
+            &hooks,
+            r#"{"hooks":{"PreToolUse":[
+                {"command":"/usr/local/bin/lean-ctx hook deny","matcher":"Read|Grep|Glob"},
+                {"hooks":[{"command":"/usr/local/bin/lean-ctx hook codex-pretooluse","type":"command","timeout":15}],"matcher":"Bash"}
+            ]}}"#,
+        )
+        .expect("write full hooks");
+        assert!(codex_hooks_cover_native_tools(home));
+        assert!(client_hook_covered("codex-cli", home));
+        assert!(client_hook_covered("codex", home));
+        // Cursor must NOT match via Codex hooks.
+        assert!(!client_hook_covered("cursor", home));
+    }
+
+    #[test]
+    fn windsurf_hook_coverage_requires_rewrite_and_redirect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        assert!(!client_hook_covered("windsurf", home));
+
+        let ws_dir = home.join(".codeium").join("windsurf");
+        std::fs::create_dir_all(&ws_dir).expect("create .codeium/windsurf dir");
+        let hooks = ws_dir.join("hooks.json");
+
+        // rewrite only → NOT covered.
+        std::fs::write(
+            &hooks,
+            r#"{"hooks":{"pre_mcp_tool_use":[
+                {"command":"/usr/local/bin/lean-ctx hook rewrite"}
+            ]}}"#,
+        )
+        .expect("write rewrite-only hooks");
+        assert!(!windsurf_hooks_cover_native_tools(home));
+
+        // Both rewrite + redirect → covered.
+        std::fs::write(
+            &hooks,
+            r#"{"hooks":{"pre_mcp_tool_use":[
+                {"command":"/usr/local/bin/lean-ctx hook rewrite"},
+                {"command":"/usr/local/bin/lean-ctx hook redirect"}
+            ]}}"#,
+        )
+        .expect("write full hooks");
+        assert!(windsurf_hooks_cover_native_tools(home));
+        assert!(client_hook_covered("windsurf", home));
+        // Other clients must NOT match.
+        assert!(!client_hook_covered("cursor", home));
+        assert!(!client_hook_covered("codex", home));
+    }
+
+    #[test]
+    fn opencode_autoloads_rules_from_shared_agents_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        assert!(!client_autoloads_rules("opencode", home));
+
+        std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
+        std::fs::write(
+            home.join(".config/opencode/AGENTS.md"),
+            format!("{FULL_HEADER}\nbody\n"),
+        )
+        .unwrap();
+        assert!(client_autoloads_rules("opencode", home));
+    }
+
+    #[test]
+    fn opencode_autoloads_rules_from_dedicated_rules_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        std::fs::create_dir_all(home.join(".config/opencode/rules")).unwrap();
+        std::fs::write(
+            home.join(".config/opencode/rules/lean-ctx.md"),
+            format!("{FULL_HEADER}\nbody\n"),
+        )
+        .unwrap();
+        assert!(client_autoloads_rules("opencode", home));
     }
 
     #[test]

@@ -86,3 +86,5 @@ ts-sdk/node_modules/
 *.kt
 .worktrees/
 .worktrees/
+bench/lifecycle/.cache/
+bench/lifecycle/runs/

@@ -35,7 +35,7 @@ fn field_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(r"(?im)^\s*(?:classification|sensitivity|data[ _-]?class)\s*[:=]\s*(.+)$")
-            .unwrap()
+            .expect("valid field classification regex")
     })
 }
 

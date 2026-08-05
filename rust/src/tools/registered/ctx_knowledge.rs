@@ -98,13 +98,9 @@ action=consolidate imports latest session if present, runs lifecycle, then frees
             .as_ref()
             .ok_or_else(|| ErrorData::internal_error("session not available", None))?;
         let (session_id, project_root) = {
-            let timeout_dur =
-                crate::core::io_health::adaptive_timeout(std::time::Duration::from_secs(10));
-            let read_result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(tokio::time::timeout(timeout_dur, session_handle.read()))
-            });
-            if let Ok(session) = read_result {
+            let read_result =
+                crate::server::bounded_lock::read(session_handle, "ctx_knowledge session read");
+            if let Some(session) = read_result {
                 let sid = session.id.clone();
                 let root = session
                     .project_root

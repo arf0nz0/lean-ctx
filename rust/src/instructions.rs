@@ -351,9 +351,14 @@ fn build_full_instructions(
     // HookCovered rule profile removes.
     let cfg = crate::core::config::Config::load();
     let tool_profile = crate::core::tool_profiles::ToolProfile::from_config(&cfg);
+    let is_shadow_only = is_shadow_surface_active();
     let skeleton = if client_loads_rules_from_file(client_name) {
         let anchor = if client_is_hook_covered(client_name) {
-            hook_covered_anchor(&tool_profile)
+            if is_shadow_only {
+                shadow_only_anchor(&tool_profile)
+            } else {
+                hook_covered_anchor(&tool_profile)
+            }
         } else {
             skeleton_anchor(&tool_profile)
         };
@@ -510,6 +515,32 @@ fn hook_covered_anchor(tp: &crate::core::tool_profiles::ToolProfile) -> String {
     }
     s.push('.');
     s
+}
+
+/// Anchor for shadow-only surface: hook-covered client whose `tools/list` only
+/// advertises `ctx_call`. Native tools are compressed by hooks; exclusive
+/// features (compose, knowledge, session) are reachable via `ctx_call`.
+fn shadow_only_anchor(tp: &crate::core::tool_profiles::ToolProfile) -> String {
+    let mut s =
+        String::from("lean-ctx active — hooks compress native Shell/Read/Grep transparently");
+    let has_exclusive = tp.is_tool_enabled("ctx_compose")
+        || tp.is_tool_enabled("ctx_knowledge")
+        || tp.is_tool_enabled("ctx_session");
+    if has_exclusive {
+        s.push_str("; use ctx_call for compose/knowledge/session");
+    }
+    s.push('.');
+    s
+}
+
+/// Whether the shadow-only tool surface is currently active.
+fn is_shadow_surface_active() -> bool {
+    let cfg = crate::core::config::Config::load();
+    match cfg.tool_surface.as_deref() {
+        Some("shadow") => true,
+        Some("mcp") => false,
+        _ => cfg.shadow_mode, // "auto": follows shadow_mode default
+    }
 }
 
 // Test-only backward-compat constants for assertion substrings.

@@ -293,10 +293,16 @@ impl ServerHandler for LeanCtxServer {
             // `core ∩ standard` intersection.
             let explicit_profile = crate::server::tool_visibility::explicit_profile(&cfg);
 
+            let client = self.client_name.read().await.clone();
+            let hook_covered = is_client_hook_covered(&client);
+
             let candidate = crate::server::tool_visibility::candidate_set(
-                crate::tool_defs::is_full_mode(),
-                std::env::var("LEAN_CTX_UNIFIED").is_ok(),
-                explicit_profile,
+                &crate::server::tool_visibility::CandidateInputs {
+                    full_mode: crate::tool_defs::is_full_mode(),
+                    unified_env: std::env::var("LEAN_CTX_UNIFIED").is_ok(),
+                    explicit_profile,
+                    hook_covered,
+                },
             );
             let all_tools = match candidate {
                 CandidateSet::Full | CandidateSet::ProfileAuthoritative => {
@@ -315,6 +321,19 @@ impl ServerHandler for LeanCtxServer {
                     }
                 }
                 CandidateSet::Unified => crate::tool_defs::unified_tool_defs(),
+                CandidateSet::ShadowOnly => {
+                    if let Some(ref reg) = self.registry {
+                        reg.tool_defs()
+                            .into_iter()
+                            .filter(|t| t.name.as_ref() == "ctx_call")
+                            .collect()
+                    } else {
+                        crate::tool_defs::lazy_tool_defs()
+                            .into_iter()
+                            .filter(|t| t.name.as_ref() == "ctx_call")
+                            .collect()
+                    }
+                }
                 CandidateSet::LazyCore => {
                     if let Some(ref reg) = self.registry {
                         let core_names = crate::tool_defs::core_tool_names();
@@ -332,7 +351,6 @@ impl ServerHandler for LeanCtxServer {
                     }
                 }
             };
-            let client = self.client_name.read().await.clone();
             let quirks = crate::server::tool_visibility::ClientQuirks::resolve(&client, candidate);
 
             let active_role = crate::core::roles::active_role();

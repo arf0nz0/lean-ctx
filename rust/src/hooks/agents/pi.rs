@@ -114,7 +114,9 @@ fn propagate_pi_replace_mode() {
         serde_json::json!({})
     };
 
-    let obj = json.as_object_mut().unwrap();
+    let obj = json
+        .as_object_mut()
+        .expect("Pi config root must be a JSON object");
     let current_mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or_default();
     if current_mode == "replace" {
         return;
@@ -176,7 +178,9 @@ fn propagate_pi_hybrid_mode() {
         serde_json::json!({})
     };
 
-    let obj = json.as_object_mut().unwrap();
+    let obj = json
+        .as_object_mut()
+        .expect("Pi config root must be a JSON object");
 
     let mut changed = false;
 

@@ -84,8 +84,10 @@ fn edit_fail_after_map_read_escalates_and_penalizes() {
         cache: None,
     };
     let penalized = resolve(&other_ctx);
-    assert_eq!(penalized.mode, "full");
-    assert_eq!(penalized.source, "edit_quality_penalty");
+    // edit_quality_fallback: risky mode (map) falls back to signatures instead
+    // of full, preserving compression while avoiding the risky mode.
+    assert_eq!(penalized.mode, "signatures");
+    assert_eq!(penalized.source, "edit_quality_fallback");
 
     // Successful edits on the failing pair recover it (hysteresis: rate
     // must drop below 0.15 — 2 fails need 12+ successes).

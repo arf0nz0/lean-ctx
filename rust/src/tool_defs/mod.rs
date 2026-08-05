@@ -24,21 +24,19 @@ fn sanitize_schema(schema: Value) -> Value {
     let Value::Object(mut schema) = schema else {
         return schema;
     };
+    // Anthropic, OpenCode, Grok, Gemini reject top-level oneOf/allOf/anyOf.
+    // All conditional validation (if/then, variant-specific required) is
+    // enforced at runtime by each tool's handle() method, so stripping
+    // these combinators makes the schema more permissive but functionally
+    // correct. (#1346)
     schema.remove("oneOf");
-    // Grok and Gemini reject root union branches that are bare `required`
-    // subschemas, as emitted by the former ctx_shell schema (#1397).
-    if let Some(any_of) = schema.get("anyOf") {
-        let dominated_by_required = any_of.as_array().is_some_and(|arr| {
-            arr.iter().all(|branch| {
-                branch.is_object()
-                    && branch.get("type").is_none()
-                    && branch.get("required").is_some()
-            })
-        });
-        if dominated_by_required {
-            schema.remove("anyOf");
-        }
-    }
+    schema.remove("allOf");
+    schema.remove("anyOf");
+    // Also strip if/then/else — they are only meaningful inside allOf
+    // branches and become dead weight once allOf is removed.
+    schema.remove("if");
+    schema.remove("then");
+    schema.remove("else");
     Value::Object(schema)
 }
 
@@ -244,7 +242,7 @@ mod tests {
     use super::sanitize_schema;
 
     #[test]
-    fn sanitize_schema_strips_one_of_preserves_all_of() {
+    fn sanitize_schema_strips_all_combinators() {
         let sanitized = sanitize_schema(json!({
             "type": "object",
             "properties": {"command": {"type": "string"}},
@@ -253,8 +251,12 @@ mod tests {
                 {"required": ["command", "cwd"]},
                 {"required": ["command", "timeout"]}
             ],
-            "allOf": [{"type": "object"}],
-            "anyOf": [{"type": "object"}]
+            "allOf": [
+                {"if": {"properties": {"action": {"const": "x"}}}, "then": {"required": ["y"]}}
+            ],
+            "anyOf": [{"type": "object"}],
+            "if": {"properties": {"action": {"const": "z"}}},
+            "then": {"required": ["w"]}
         }));
 
         assert_eq!(
@@ -262,9 +264,7 @@ mod tests {
             json!({
                 "type": "object",
                 "properties": {"command": {"type": "string"}},
-                "required": ["base"],
-                "allOf": [{"type": "object"}],
-                "anyOf": [{"type": "object"}]
+                "required": ["base"]
             })
         );
     }
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_preserves_anyof_with_typed_branches() {
+    fn sanitize_strips_anyof_with_typed_branches() {
         let schema = json!({
             "type": "object",
             "anyOf": [
@@ -308,6 +308,6 @@ mod tests {
 
         let result = sanitize_schema(schema);
 
-        assert!(result.get("anyOf").is_some());
+        assert!(result.get("anyOf").is_none());
     }
 }

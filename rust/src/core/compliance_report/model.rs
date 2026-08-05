@@ -83,7 +83,7 @@ pub struct RetentionSection {
     /// `audit_retention_days` declared by the resolved pack (governance intent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_audit_retention_days: Option<u32>,
-    /// Effective commercial plan id (`free`, `team`, `business`, …).
+    /// Effective commercial plan id (`free`, `pro`, `team`, …).
     pub plan: String,
     /// Where the plan came from (`live`, `cached`, `unverified`).
     pub plan_source: String,

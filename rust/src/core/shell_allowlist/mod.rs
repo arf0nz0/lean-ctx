@@ -34,8 +34,8 @@ use tokenizer::{
 pub(crate) use case_construct::{contains_double_semicolon, rewrite_case_constructs};
 pub use config::*;
 pub use enforcement::*;
-#[cfg(test)]
 pub(crate) use heredoc::heredoc_delims;
+pub(crate) use heredoc::read_heredoc_delim;
 pub use heredoc::strip_all_heredoc_bodies;
 pub(crate) use heredoc::{strip_comments, strip_quoted_heredoc_bodies};
 pub use mode::ShellSecurity;

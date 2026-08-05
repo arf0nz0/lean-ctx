@@ -412,6 +412,13 @@ pub struct Config {
     /// Default: unset (auto-detect per agent via `recommend_hook_mode`)
     #[serde(default)]
     pub hook_mode: Option<String>,
+    /// MCP tool surface mode. Controls how many tools `tools/list` advertises.
+    /// - `auto` (default): shadow-only (`ctx_call` only) for hook-covered
+    ///   clients, full lazy-core surface for all others.
+    /// - `mcp`: always advertise the full lazy-core/profile surface.
+    /// - `shadow`: always advertise only `ctx_call` (requires installed hooks).
+    #[serde(default)]
+    pub tool_surface: Option<String>,
     /// Opt-in (#520): write a human-readable debug log of intercepted MCP tool
     /// calls and hook routing decisions (lean-ctx vs native, with reasons) to
     /// `<state_dir>/logs/debug.log`. Override via the LEAN_CTX_DEBUG_LOG env var.

@@ -78,12 +78,11 @@ impl McpTool for CtxEditTool {
             allow_lossy_utf8,
         };
 
-        tokio::task::block_in_place(|| {
+        {
             let cache_lock = ctx
                 .cache
                 .as_ref()
                 .ok_or_else(|| ErrorData::internal_error("cache not available", None))?;
-            let rt = tokio::runtime::Handle::current();
 
             // Serialize edits to the SAME file via a cheap per-file lock. This
             // lets the (slow) disk read/replace/write run WITHOUT holding the
@@ -112,16 +111,14 @@ impl McpTool for CtxEditTool {
 
             // Brief shared lock: read the recorded read-mode for auto-escalation.
             // On contention we simply skip escalation rather than blocking I/O.
-            let last_mode = match rt.block_on(tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                cache_lock.read(),
-            )) {
-                Ok(cache) => cache
-                    .get(&path)
-                    .map(|e| e.last_mode.clone())
-                    .unwrap_or_default(),
-                Err(_) => String::new(),
-            };
+            let last_mode =
+                match crate::server::bounded_lock::read(cache_lock, "ctx_edit cache read") {
+                    Some(cache) => cache
+                        .get(&path)
+                        .map(|e| e.last_mode.clone())
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
 
             // Heavy disk I/O — no global cache lock held here.
             let (output, effect) = crate::tools::ctx_edit::run_io(&edit_params, &last_mode);
@@ -132,27 +129,23 @@ impl McpTool for CtxEditTool {
 
             // Apply the deferred cache mutation under a brief exclusive lock.
             if !matches!(effect, crate::tools::ctx_edit::CacheEffect::None) {
-                match rt.block_on(tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    cache_lock.write(),
-                )) {
-                    Ok(mut cache) => {
+                crate::tools::ctx_read::dedup_hook::on_write(&path);
+                match crate::server::bounded_lock::write(cache_lock, "ctx_edit cache write") {
+                    Some(mut cache) => {
                         crate::tools::ctx_edit::apply_cache_effect(&mut cache, &path, effect);
                     }
-                    Err(_) => {
+                    None => {
                         tracing::warn!(
-                            "ctx_edit: cache write-lock timeout (5s) applying post-edit cache effect for {path}"
+                            "ctx_edit: cache write-lock timeout applying post-edit effect for {path}"
                         );
                     }
                 }
             }
 
             if let Some(session_lock) = ctx.session.as_ref() {
-                let guard = rt.block_on(tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    session_lock.write(),
-                ));
-                if let Ok(mut session) = guard {
+                if let Some(mut session) =
+                    crate::server::bounded_lock::write(session_lock, "ctx_edit session write")
+                {
                     session.mark_modified(&path);
                 }
             }
@@ -167,6 +160,6 @@ impl McpTool for CtxEditTool {
                 shell_outcome: None,
                 content_blocks: None,
             })
-        })
+        }
     }
 }

@@ -486,7 +486,10 @@ fn pick_resource(resources: Vec<CloudResource>) -> Result<CloudResource, String>
              selected a site during consent"
                 .to_string(),
         ),
-        1 => Ok(resources.into_iter().next().unwrap()),
+        1 => Ok(resources
+            .into_iter()
+            .next()
+            .expect("single resource when len == 1")),
         _ => {
             println!("\nMultiple Jira sites are accessible — choose one:");
             for (i, r) in resources.iter().enumerate() {

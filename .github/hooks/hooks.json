@@ -1,13 +1,23 @@
 {
   "hooks": {
+    "postToolUse": [
+      {
+        "bash": "\"/Users/yvesgugger/.local/bin/lean-ctx\" hook observe",
+        "powershell": "& \"/Users/yvesgugger/.local/bin/lean-ctx\" hook observe",
+        "timeoutSec": 5,
+        "type": "command"
+      }
+    ],
     "preToolUse": [
       {
-        "bash": "lean-ctx hook rewrite",
+        "bash": "\"/Users/yvesgugger/.local/bin/lean-ctx\" hook rewrite",
+        "powershell": "& \"/Users/yvesgugger/.local/bin/lean-ctx\" hook rewrite",
         "timeoutSec": 15,
         "type": "command"
       },
       {
-        "bash": "lean-ctx hook redirect",
+        "bash": "\"/Users/yvesgugger/.local/bin/lean-ctx\" hook redirect",
+        "powershell": "& \"/Users/yvesgugger/.local/bin/lean-ctx\" hook redirect",
         "timeoutSec": 5,
         "type": "command"
       }

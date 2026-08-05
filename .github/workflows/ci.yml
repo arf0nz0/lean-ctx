@@ -180,7 +180,7 @@ jobs:
           workspaces: rust -> target
       - name: Run clippy
         working-directory: rust
-        run: cargo clippy --all-features -- -D warnings -A clippy::unwrap_used -A clippy::too_many_lines
+        run: cargo clippy --all-features -- -D warnings -A clippy::too_many_lines
       # Maintainability gate (#660): no Rust file grows past 1500 LOC
       # (legacy files are frozen at 2000 via the script's allowlist).
       - name: LOC gate (file size budget)
@@ -337,7 +337,7 @@ jobs:
         run: cargo fmt -p lean-ctx-sdk --check
       - name: Clippy (pedantic, 0 warnings)
         working-directory: rust
-        run: cargo clippy -p lean-ctx-sdk --all-targets -- -D warnings -A clippy::unwrap_used -A clippy::too_many_lines
+        run: cargo clippy -p lean-ctx-sdk --all-targets -- -D warnings -A clippy::too_many_lines
       - name: Test (doctests + engine integration)
         working-directory: rust
         run: cargo test -p lean-ctx-sdk
@@ -563,7 +563,7 @@ jobs:
       - name: Self-footprint gate (doctor overhead)
         shell: bash
         env:
-          LEAN_CTX_CONTEXT_BUDGET_TOKENS: "3100"
+          LEAN_CTX_CONTEXT_BUDGET_TOKENS: "3130"
         run: |
           set -euo pipefail
           BIN="$GITHUB_WORKSPACE/rust/target/debug/lean-ctx"

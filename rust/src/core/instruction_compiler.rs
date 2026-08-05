@@ -63,7 +63,8 @@ pub(crate) fn compile(
         opts.unified,
     );
 
-    if let Some(cap) = constraints.unwrap().mcp_instructions_max_chars
+    let constraints = constraints.expect("client id validated above");
+    if let Some(cap) = constraints.mcp_instructions_max_chars
         && mcp_instructions.len() > cap
     {
         return Err(format!(

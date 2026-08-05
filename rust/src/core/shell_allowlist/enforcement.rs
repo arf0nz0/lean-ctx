@@ -338,9 +338,11 @@ pub(super) fn is_bare_interpreter_stdin(segment: &str) -> bool {
     if !INTERPRETER_COMMANDS.contains(&base.as_str()) {
         return false;
     }
-    !tokens[1..]
+    let has_file_arg = tokens[1..]
         .iter()
-        .any(|t| !t.starts_with('-') && SCRIPT_EXTENSIONS.iter().any(|ext| t.ends_with(ext)))
+        .any(|t| !t.starts_with('-') && SCRIPT_EXTENSIONS.iter().any(|ext| t.ends_with(ext)));
+    let has_module_flag = tokens[1..].iter().any(|t| *t == "-m");
+    !(has_file_arg || has_module_flag)
 }
 
 /// Dangerous flag patterns for specific commands.

@@ -181,7 +181,7 @@ pub(crate) fn install_commandcode_mcp(home: &Path) -> Result<String, String> {
 
     let servers = root
         .as_object_mut()
-        .unwrap()
+        .expect("root verified as JSON object above")
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
     if !servers.is_object() {
@@ -199,7 +199,7 @@ pub(crate) fn install_commandcode_mcp(home: &Path) -> Result<String, String> {
     });
     servers
         .as_object_mut()
-        .unwrap()
+        .expect("mcpServers verified as JSON object above")
         .insert("lean-ctx".to_string(), entry);
 
     let pretty =

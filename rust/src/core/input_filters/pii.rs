@@ -54,38 +54,41 @@ fn rules() -> &'static [PiiRule] {
             // Swiss AHV/AVS social-security number (EAN-13, prefixed 756).
             PiiRule {
                 kind: PiiKind::ChAhv,
-                re: Regex::new(r"\b756[.\s]?\d{4}[.\s]?\d{4}[.\s]?\d{2}\b").unwrap(),
+                re: Regex::new(r"\b756[.\s]?\d{4}[.\s]?\d{4}[.\s]?\d{2}\b")
+                    .expect("valid AHV regex"),
                 validate: ahv_valid,
             },
             // IBAN — run before the card rule so its digits aren't re-matched.
             PiiRule {
                 kind: PiiKind::Iban,
-                re: Regex::new(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]){11,30}\b").unwrap(),
+                re: Regex::new(r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]){11,30}\b")
+                    .expect("valid IBAN regex"),
                 validate: iban_valid,
             },
             // Payment card (13–19 digits, optional space/hyphen groups), Luhn.
             PiiRule {
                 kind: PiiKind::Card,
-                re: Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").unwrap(),
+                re: Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").expect("valid card regex"),
                 validate: luhn_valid,
             },
             // Email — specific enough that no extra validation is needed.
             PiiRule {
                 kind: PiiKind::Email,
-                re: Regex::new(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b").unwrap(),
+                re: Regex::new(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b")
+                    .expect("valid email regex"),
                 validate: |_| true,
             },
             // US Social Security number.
             PiiRule {
                 kind: PiiKind::Ssn,
-                re: Regex::new(r"\d{3}-\d{2}-\d{4}").unwrap(),
+                re: Regex::new(r"\d{3}-\d{2}-\d{4}").expect("valid SSN regex"),
                 validate: |_| true,
             },
             // E.164 phone number (up to 15 digits, with an optional plus sign).
             // This runs after structured identifiers to avoid overlapping matches.
             PiiRule {
                 kind: PiiKind::Phone,
-                re: Regex::new(r"\+?[1-9]\d{1,14}").unwrap(),
+                re: Regex::new(r"\+?[1-9]\d{1,14}").expect("valid phone regex"),
                 validate: |_| true,
             },
         ]

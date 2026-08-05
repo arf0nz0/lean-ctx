@@ -531,7 +531,7 @@ fn find_closest(needle: &str, haystack: &[String]) -> Option<String> {
     let mut best: Option<(usize, &str)> = None;
     for candidate in haystack {
         let d = levenshtein(needle, candidate);
-        if d <= 3 && (best.is_none() || d < best.unwrap().0) {
+        if d <= 3 && best.as_ref().is_none_or(|(best_d, _)| d < *best_d) {
             best = Some((d, candidate));
         }
     }
@@ -543,7 +543,7 @@ fn find_closest(needle: &str, haystack: &[String]) -> Option<String> {
     for candidate in haystack {
         let cand_leaf = candidate.rsplit('.').next().unwrap_or(candidate);
         let d = levenshtein(leaf, cand_leaf);
-        if d <= 2 && (leaf_best.is_none() || d < leaf_best.unwrap().0) {
+        if d <= 2 && leaf_best.as_ref().is_none_or(|(best_d, _)| d < *best_d) {
             leaf_best = Some((d, candidate));
         }
     }

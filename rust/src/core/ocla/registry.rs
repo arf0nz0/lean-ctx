@@ -417,6 +417,8 @@ mod tests {
                     agent_id: "agent-1".into(),
                     conversation_id: "conv-1".into(),
                     mtime: 1000,
+                    relay_content: None,
+                    relay_mode: None,
                 });
             let _ =
                 reg.delivery_registry

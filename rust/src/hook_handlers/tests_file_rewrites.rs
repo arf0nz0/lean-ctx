@@ -40,20 +40,13 @@ fn rewrite_skip_reason_tracks_candidate_none_branches() {
         "not a known read/search/list command"
     );
 
-    // A compound whose sink isn't allowlisted (here `python3 -c`) is left raw for
-    // the agent shell — the rewrite must not newly block it (#589). Deterministic
-    // via an explicit allowlist that omits python3.
-    let tricky = "git log | python3 -c 'print(1)'";
-    let (declined, reason) = with_test_allowlist(|| {
-        (
-            rewrite_candidate(tricky, binary).is_none(),
-            rewrite_skip_reason(tricky),
-        )
-    });
-    assert!(declined, "tricky compound sink must not be rewritten");
+    // #1408: Compounds with non-allowlisted sinks are now wrapped for enforcement.
+    // Test a heredoc compound instead — heredocs genuinely can't be wrapped.
+    let heredoc_compound = "git log | cat <<EOF\nhi\nEOF";
+    assert!(rewrite_candidate(heredoc_compound, binary).is_none());
     assert_eq!(
-        reason,
-        "compound pipes/chains into a non-allowlisted or interpreter sink — left raw for the agent shell"
+        rewrite_skip_reason(heredoc_compound),
+        "heredoc cannot be rewritten safely"
     );
 }
 

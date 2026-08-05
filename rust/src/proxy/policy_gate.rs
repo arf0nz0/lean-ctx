@@ -602,21 +602,31 @@ mod tests {
     #[serial_test::serial(policy_gate_ledger)]
     fn person_day_budget_blocks_after_cap() {
         test_reset_ledger();
+        test_reset_rate_ledger();
         record_spend(Some("mara"), Some("web"), 49.0);
         assert!(enforce(&rules(), Some("claude-x"), &tags("mara", "web")).is_ok());
         record_spend(Some("mara"), Some("web"), 2.0);
-        let err = enforce(&rules(), Some("claude-x"), &tags("mara", "web")).unwrap_err();
-        match err {
-            Refusal::PersonBudgetExceeded {
+        let spent = ledger()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .person_day_spend("mara");
+        assert!(
+            spent >= 51.0 - 1e-9,
+            "ledger should show 51 for mara, got {spent} — possible race with another test",
+        );
+        let result = enforce(&rules(), Some("claude-x"), &tags("mara", "web"));
+        match result {
+            Err(Refusal::PersonBudgetExceeded {
                 person,
                 cap_usd,
                 spent_usd,
-            } => {
+            }) => {
                 assert_eq!(person, "mara");
                 assert!((cap_usd - 50.0).abs() < f64::EPSILON);
                 assert!(spent_usd >= 51.0 - 1e-9);
             }
-            other => panic!("expected person budget refusal, got {other:?}"),
+            Err(other) => panic!("expected PersonBudgetExceeded, got {other:?}"),
+            Ok(()) => panic!("enforce returned Ok but ledger shows {spent:.1} for mara (cap=50)"),
         }
         test_reset_ledger();
     }
@@ -625,11 +635,25 @@ mod tests {
     #[serial_test::serial(policy_gate_ledger)]
     fn project_month_budget_blocks_after_cap() {
         test_reset_ledger();
+        test_reset_rate_ledger();
         record_spend(Some("a"), Some("ml-pipeline"), 600.0);
         record_spend(Some("b"), Some("ml-pipeline"), 500.0);
-        let err = enforce(&rules(), Some("claude-x"), &tags("c", "ml-pipeline")).unwrap_err();
-        assert!(matches!(err, Refusal::ProjectBudgetExceeded { .. }));
-        // Another project is unaffected.
+        let spent = ledger()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .project_month_spend("ml-pipeline");
+        assert!(
+            spent >= 1100.0 - 1e-9,
+            "ledger should show 1100 for ml-pipeline, got {spent}",
+        );
+        let result = enforce(&rules(), Some("claude-x"), &tags("c", "ml-pipeline"));
+        match result {
+            Err(Refusal::ProjectBudgetExceeded { .. }) => {}
+            Err(other) => panic!("expected ProjectBudgetExceeded, got {other:?}"),
+            Ok(()) => {
+                panic!("enforce returned Ok but ledger shows {spent:.1} for ml-pipeline (cap=1000)")
+            }
+        }
         assert!(enforce(&rules(), Some("claude-x"), &tags("c", "other")).is_ok());
         test_reset_ledger();
     }
@@ -697,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(policy_gate_rate)]
+    #[serial_test::serial(policy_gate_ledger)]
     fn rate_limit_blocks_after_n_accepted_requests() {
         test_reset_ledger();
         let mut r = rules();
@@ -734,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(policy_gate_rate)]
+    #[serial_test::serial(policy_gate_ledger)]
     fn rate_window_rolls_per_minute() {
         test_reset_rate_ledger();
         let mut l = RateLedger::default();
@@ -747,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(policy_gate_rate)]
+    #[serial_test::serial(policy_gate_ledger)]
     fn rate_limit_absent_or_anonymous_is_noop() {
         test_reset_ledger();
         test_reset_rate_ledger();

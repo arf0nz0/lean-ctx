@@ -45,7 +45,7 @@ fn probe_inner(binary: &str) -> Result<bool, String> {
             "clientInfo": { "name": "lean-ctx-wrap-probe", "version": "1.0" }
         }
     });
-    let req = serde_json::to_string(&init_request).unwrap();
+    let req = serde_json::to_string(&init_request).map_err(|e| format!("serialize init: {e}"))?;
     writeln!(stdin, "Content-Length: {}\r\n\r\n{req}", req.len())
         .map_err(|e| format!("write init: {e}"))?;
 
@@ -53,7 +53,8 @@ fn probe_inner(binary: &str) -> Result<bool, String> {
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
     });
-    let notif = serde_json::to_string(&initialized_notif).unwrap();
+    let notif =
+        serde_json::to_string(&initialized_notif).map_err(|e| format!("serialize notif: {e}"))?;
     writeln!(stdin, "Content-Length: {}\r\n\r\n{notif}", notif.len())
         .map_err(|e| format!("write notif: {e}"))?;
 
@@ -63,7 +64,7 @@ fn probe_inner(binary: &str) -> Result<bool, String> {
         "method": "tools/list",
         "params": {}
     });
-    let list = serde_json::to_string(&list_request).unwrap();
+    let list = serde_json::to_string(&list_request).map_err(|e| format!("serialize list: {e}"))?;
     writeln!(stdin, "Content-Length: {}\r\n\r\n{list}", list.len())
         .map_err(|e| format!("write list: {e}"))?;
     stdin.flush().map_err(|e| format!("flush: {e}"))?;

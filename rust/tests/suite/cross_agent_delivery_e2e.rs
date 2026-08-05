@@ -90,14 +90,16 @@ async fn two_agents_share_reads_via_delivery_endpoints() {
 }
 
 #[tokio::test]
-async fn stale_mtime_returns_miss() {
+async fn stale_mtime_still_hits_same_hash() {
     let app = ocla_app();
     let hash: [u8; 12] = [11, 21, 31, 41, 51, 61, 71, 81, 91, 101, 111, 121];
 
     post_record(&app, "agent-a", "src/lib.rs", hash, 1000).await;
 
+    // blake3 is the content identity; mtime changes (checkout/rebase) don't
+    // invalidate the cache entry.
     let stale = post_check(&app, hash, 2000).await;
-    assert_eq!(stale["hit"], false, "different mtime → file was modified");
+    assert_eq!(stale["hit"], true, "same blake3 → hit regardless of mtime");
 }
 
 #[tokio::test]
@@ -160,6 +162,143 @@ async fn multiple_agents_multiple_files_isolation() {
     assert_eq!(check_2["hit"], true);
     assert_eq!(check_2["agent_id"], "tab-B");
 
-    let check_wrong_mtime = post_check(&app, hash_1, 9999).await;
-    assert_eq!(check_wrong_mtime["hit"], false);
+    // mtime is no longer a cache discriminator — same hash = hit
+    let check_different_mtime = post_check(&app, hash_1, 9999).await;
+    assert_eq!(check_different_mtime["hit"], true);
+}
+
+#[tokio::test]
+async fn relay_content_recorded_and_served_via_wire() {
+    let app = ocla_app();
+    let hash: [u8; 12] = [17, 27, 37, 47, 57, 67, 77, 87, 97, 107, 117, 127];
+    let mtime = 5000;
+    let relay_text = "pub struct Config {\n    port: u16,\n    host: String,\n}";
+
+    let entry = json!({
+        "blake3": hash,
+        "path": "src/config.rs",
+        "line_count": 4,
+        "agent_id": "local-1001",
+        "conversation_id": "conv-local-1001",
+        "mtime": mtime,
+        "token_count": 800,
+        "relay_content": relay_text,
+        "relay_mode": "map:v2",
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/ocla/v1/delivery/record", &entry))
+        .await
+        .expect("record response");
+    assert!(resp.status().is_success());
+
+    let hit = post_check(&app, hash, mtime).await;
+    assert_eq!(hit["hit"], true);
+    assert_eq!(
+        hit["relay_content"].as_str().unwrap(),
+        relay_text,
+        "relay_content must be served back to requesting agent"
+    );
+    assert_eq!(hit["relay_mode"], "map:v2");
+}
+
+#[tokio::test]
+async fn relay_stats_tracked_separately() {
+    let app = ocla_app();
+    let hash: [u8; 12] = [18, 28, 38, 48, 58, 68, 78, 88, 98, 108, 118, 128];
+
+    let entry = json!({
+        "blake3": hash,
+        "path": "src/relay_stats.rs",
+        "line_count": 50,
+        "agent_id": "local-2002",
+        "conversation_id": "conv-local-2002",
+        "mtime": 6000,
+        "token_count": 1200,
+        "relay_content": "fn main() {}",
+        "relay_mode": "signatures:v2",
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/ocla/v1/delivery/record", &entry))
+        .await
+        .expect("record");
+    assert!(resp.status().is_success());
+
+    let stats_before = get_stats(&app).await;
+    let relay_before = stats_before["relay_served"].as_u64().unwrap_or(0);
+
+    let _ = post_check(&app, hash, 6000).await;
+
+    let stats_after = get_stats(&app).await;
+    let relay_after = stats_after["relay_served"].as_u64().unwrap_or(0);
+    assert!(
+        relay_after > relay_before,
+        "relay_served must increment on relay content hit"
+    );
+    assert!(
+        stats_after["relay_tokens_saved"].as_u64().unwrap_or(0) > 0,
+        "relay_tokens_saved must be positive"
+    );
+}
+
+#[tokio::test]
+async fn pid_differentiation_enables_cross_agent_hits() {
+    let app = ocla_app();
+    let hash: [u8; 12] = [19, 29, 39, 49, 59, 69, 79, 89, 99, 109, 119, 129];
+
+    let entry = json!({
+        "blake3": hash,
+        "path": "src/pid_test.rs",
+        "line_count": 30,
+        "agent_id": "local-9876",
+        "conversation_id": "conv-local-9876",
+        "mtime": 7000,
+        "token_count": 600,
+        "relay_content": "mod pid_test;",
+        "relay_mode": "map:v2",
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/ocla/v1/delivery/record", &entry))
+        .await
+        .expect("record");
+    assert!(resp.status().is_success());
+
+    // Different PID agent checks → must get relay hit
+    let check_body = json!({
+        "blake3": hash,
+        "mtime": 7000,
+        "path": "src/pid_test.rs",
+        "requester_agent_id": "local-5432",
+        "requester_conversation_id": "conv-local-5432",
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/ocla/v1/delivery/check", &check_body))
+        .await
+        .expect("check response");
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let result: Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(result["hit"], true, "different PID must hit");
+    assert_eq!(result["relay_content"], "mod pid_test;");
+    assert_eq!(result["agent_id"], "local-9876");
+
+    // Same PID agent checks → must NOT hit (self-read)
+    let self_body = json!({
+        "blake3": hash,
+        "mtime": 7000,
+        "path": "src/pid_test.rs",
+        "requester_agent_id": "local-9876",
+        "requester_conversation_id": "conv-local-9876",
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/ocla/v1/delivery/check", &self_body))
+        .await
+        .expect("self-check response");
+    let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let result: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(result["hit"], false, "same agent must NOT self-hit");
 }

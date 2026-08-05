@@ -105,6 +105,12 @@ impl McpTool for CtxShellTool {
             });
         }
 
+        if let Some((lang, code, remainder)) = detect_heredoc_reroute(&command) {
+            return tokio::task::block_in_place(|| {
+                handle_interpreter_heredoc_reroute(args, ctx, &lang, &code, remainder)
+            });
+        }
+
         if let Err(msg) = crate::core::shell_allowlist::check_shell_allowlist(&command) {
             return Ok(ToolOutput {
                 shell_outcome: Some(ShellOutcome::Blocked),
@@ -846,6 +852,318 @@ fn foreground_soft_cap_ms() -> u64 {
         .unwrap_or(110_000)
 }
 
+/// Map an interpreter binary to a `ctx_execute` language name.
+fn interpreter_to_execute_language(base: &str) -> Option<&'static str> {
+    match base {
+        "python" | "python2" | "python3" => Some("python"),
+        "node" => Some("javascript"),
+        "ruby" => Some("ruby"),
+        _ => None,
+    }
+}
+
+fn is_env_assignment_token(token: &str) -> bool {
+    let unquoted: String = token.chars().filter(|c| *c != '"' && *c != '\'').collect();
+    unquoted.contains('=')
+        && !unquoted.starts_with('-')
+        && !unquoted.starts_with('/')
+        && !unquoted.starts_with('.')
+}
+
+/// Quote-aware scan for compound operators that would invalidate a reroute.
+fn prelude_has_compound_operator(prelude: &str) -> bool {
+    let bytes = prelude.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < len {
+        let ch = bytes[i];
+        if in_single {
+            if ch == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if ch == b'\\' && i + 1 < len {
+                i += 2;
+            } else {
+                if ch == b'"' {
+                    in_double = false;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        match ch {
+            b'\'' => {
+                in_single = true;
+                i += 1;
+            }
+            b'"' => {
+                in_double = true;
+                i += 1;
+            }
+            b';' | b'|' | b'&' | b'(' | b'{' => return true,
+            _ => i += 1,
+        }
+    }
+    false
+}
+
+/// Detect interpreter heredoc patterns and extract the language + code body.
+/// Returns `Some((language, code, remainder))` where remainder is any command
+/// after the heredoc terminator that still needs shell execution.
+fn detect_heredoc_reroute(command: &str) -> Option<(String, String, Option<String>)> {
+    if !command.contains("<<") {
+        return None;
+    }
+
+    let lines: Vec<&str> = command.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    let first_line = lines[0];
+    let delims = crate::core::shell_allowlist::heredoc_delims(first_line, false);
+    if delims.len() != 1 {
+        return None;
+    }
+    let delim = delims[0].clone();
+
+    let heredoc_pos = find_heredoc_operator(first_line)?;
+    let prelude = first_line[..heredoc_pos].trim();
+    if prelude_has_compound_operator(prelude) {
+        return None;
+    }
+
+    let language = parse_interpreter_heredoc_prelude(prelude)?.to_string();
+
+    if has_trailing_tokens_after_heredoc_delim(first_line, heredoc_pos) {
+        return None;
+    }
+
+    let mut body = String::new();
+    let mut remainder_start: Option<usize> = None;
+    for (idx, line) in lines.iter().enumerate().skip(1) {
+        if line.trim_start_matches('\t').trim() == delim {
+            remainder_start = Some(idx + 1);
+            break;
+        }
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(line);
+    }
+    let remainder_start = remainder_start?;
+    let remainder = if remainder_start < lines.len() {
+        let rest = lines[remainder_start..].join("\n");
+        let rest = rest.trim();
+        if rest.is_empty() {
+            None
+        } else {
+            Some(rest.to_string())
+        }
+    } else {
+        None
+    };
+
+    Some((language, body, remainder))
+}
+
+fn find_heredoc_operator(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < len {
+        let ch = bytes[i];
+        if in_single {
+            if ch == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if ch == b'\\' && i + 1 < len {
+                i += 2;
+            } else {
+                if ch == b'"' {
+                    in_double = false;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        match ch {
+            b'\'' => {
+                in_single = true;
+                i += 1;
+            }
+            b'"' => {
+                in_double = true;
+                i += 1;
+            }
+            b'<' if i + 1 < len && bytes[i + 1] == b'<' => {
+                if i + 2 < len && bytes[i + 2] == b'<' {
+                    i += 3;
+                    continue;
+                }
+                return Some(i);
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn has_trailing_tokens_after_heredoc_delim(line: &str, heredoc_pos: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = heredoc_pos + 2;
+    if i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+    }
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    let Some((_, _, next)) = crate::core::shell_allowlist::read_heredoc_delim(bytes, i) else {
+        return true;
+    };
+    !line[next..].trim().is_empty()
+}
+
+fn parse_interpreter_heredoc_prelude(prelude: &str) -> Option<&'static str> {
+    let tokens = crate::core::shell_allowlist::shell_tokenize(prelude.trim());
+    let mut idx = 0;
+    while idx < tokens.len() && is_env_assignment_token(&tokens[idx]) {
+        idx += 1;
+    }
+    if idx >= tokens.len() {
+        return None;
+    }
+    let base = tokens[idx]
+        .rsplit('/')
+        .next()
+        .unwrap_or(tokens[idx].as_str());
+    let language = interpreter_to_execute_language(base)?;
+    idx += 1;
+    match tokens.get(idx) {
+        None => Some(language),
+        Some(dash) if dash == "-" => {
+            if tokens.len() == idx + 1 {
+                Some(language)
+            } else {
+                None
+            }
+        }
+        Some(_) => None,
+    }
+}
+
+fn handle_interpreter_heredoc_reroute(
+    args: &Map<String, Value>,
+    ctx: &ToolContext,
+    language: &str,
+    code: &str,
+    remainder: Option<String>,
+) -> Result<ToolOutput, ErrorData> {
+    let timeout_ms = get_int(args, "timeout_ms").and_then(|n| u64::try_from(n).ok());
+    let timeout_secs = timeout_ms.map(|ms| ms.div_ceil(1000).max(1));
+
+    let (exec_text, exec_outcome) =
+        crate::tools::ctx_execute::handle(language, code, None, timeout_secs);
+    let reroute_note = format!(
+        "\n[ctx_shell: interpreter heredoc auto-rerouted to ctx_execute(language=\"{language}\")]"
+    );
+    let exec_text = crate::core::redaction::redact_text_if_enabled(&exec_text);
+
+    let Some(rest_cmd) = remainder else {
+        return Ok(ToolOutput {
+            text: format!("{exec_text}{reroute_note}"),
+            original_tokens: crate::core::tokens::count_tokens(&exec_text),
+            saved_tokens: 0,
+            mode: Some("heredoc-reroute".to_string()),
+            path: None,
+            changed: false,
+            shell_outcome: Some(exec_outcome),
+            content_blocks: None,
+        });
+    };
+
+    if let Err(msg) = crate::core::shell_allowlist::check_shell_allowlist(&rest_cmd) {
+        let blocked =
+            format!("{exec_text}{reroute_note}\n\n[remainder blocked by shell allowlist]\n{msg}");
+        return Ok(ToolOutput {
+            shell_outcome: Some(ShellOutcome::Blocked),
+            content_blocks: None,
+            ..ToolOutput::simple(blocked)
+        });
+    }
+
+    let session_lock = ctx
+        .session
+        .as_ref()
+        .ok_or_else(|| ErrorData::internal_error("session not available", None))?;
+    let explicit_cwd = get_str(args, "cwd");
+    let guard = crate::server::bounded_lock::read(session_lock, "ctx_shell_cwd");
+    let (effective_cwd, _) = resolve_effective_cwd(guard, explicit_cwd.as_deref())?;
+
+    let extra_env: std::collections::HashMap<String, String> = args
+        .get("env")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .filter(|(k, _)| !is_dangerous_env_key(k))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (shell_raw, shell_exit) = crate::server::execute::execute_command_with_env(
+        &rest_cmd,
+        &effective_cwd,
+        &extra_env,
+        timeout_ms,
+    );
+    let shell_output = redact_shell_output_secrets(&shell_raw);
+    let arg_raw = get_bool(args, "raw").unwrap_or(false);
+    let arg_bypass = get_bool(args, "bypass").unwrap_or(false);
+    let env_disabled = std::env::var("LEAN_CTX_DISABLED").is_ok();
+    let env_raw = std::env::var("LEAN_CTX_RAW").is_ok();
+    let (raw, _) = resolve_shell_raw_flags(arg_raw, arg_bypass, env_disabled, env_raw);
+
+    let shell_text = if raw {
+        shell_output
+    } else {
+        crate::tools::ctx_shell::handle(&rest_cmd, &shell_output, shell_exit, ctx.crp_mode)
+    };
+    let shell_text = crate::core::redaction::redact_text_if_enabled(&shell_text);
+    let exit_suffix = match shell_exit {
+        0 => String::new(),
+        124 => "\n[exit:124 — command timed out]".to_string(),
+        _ => format!("\n[exit:{shell_exit}]"),
+    };
+
+    let combined = format!(
+        "{exec_text}{reroute_note}\n\n[heredoc remainder via ctx_shell]\n{shell_text}{exit_suffix}"
+    );
+    let token_count = crate::core::tokens::count_tokens(&combined);
+    Ok(ToolOutput {
+        text: combined,
+        original_tokens: token_count,
+        saved_tokens: 0,
+        mode: Some("heredoc-reroute".to_string()),
+        path: None,
+        changed: false,
+        shell_outcome: Some(ShellOutcome::Exit(shell_exit)),
+        content_blocks: None,
+    })
+}
+
 /// #842: detect a bare `cat <single_file>` command (no pipes, redirects, flags).
 fn detect_bare_cat_file(command: &str) -> Option<String> {
     let trimmed = command.trim();
@@ -876,8 +1194,8 @@ fn detect_bare_cat_file(command: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CtxShellTool, format_background_state, is_timeout_notice_only, resolve_effective_cwd,
-        shell_access_denial, should_auto_background,
+        CtxShellTool, detect_heredoc_reroute, format_background_state, is_timeout_notice_only,
+        resolve_effective_cwd, shell_access_denial, should_auto_background,
     };
     use crate::server::background_shell::JobState;
     use crate::server::tool_trait::{McpTool, ShellOutcome, ToolContext};
@@ -1019,5 +1337,45 @@ mod tests {
 
         assert_eq!(output.shell_outcome, Some(ShellOutcome::Blocked));
         assert!(output.text.contains("shell_access=true"), "{}", output.text);
+    }
+
+    #[test]
+    fn detect_heredoc_reroute_python_quoted() {
+        let cmd = "python3 - <<'PY'\nprint(1)\nPY";
+        let (lang, code, rest) = detect_heredoc_reroute(cmd).expect("must detect python heredoc");
+        assert_eq!(lang, "python");
+        assert_eq!(code, "print(1)");
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn detect_heredoc_reroute_python_with_remainder() {
+        let cmd = "python3 <<'PY'\nprint(1)\nPY\nnode --test file.js";
+        let (lang, code, rest) = detect_heredoc_reroute(cmd).expect("must detect split heredoc");
+        assert_eq!(lang, "python");
+        assert_eq!(code, "print(1)");
+        assert_eq!(rest.as_deref(), Some("node --test file.js"));
+    }
+
+    #[test]
+    fn detect_heredoc_reroute_unquoted_and_tab_stripped() {
+        let unquoted = "ruby <<EOF\nputs 1\nEOF";
+        let (lang, code, rest) = detect_heredoc_reroute(unquoted).unwrap();
+        assert_eq!(lang, "ruby");
+        assert_eq!(code, "puts 1");
+        assert!(rest.is_none());
+
+        let tabbed = "python3 <<-\tSCRIPT\n\tprint('ok')\nSCRIPT";
+        let (lang, code, rest) = detect_heredoc_reroute(tabbed).unwrap();
+        assert_eq!(lang, "python");
+        assert_eq!(code, "\tprint('ok')");
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn detect_heredoc_reroute_rejects_compound_prefix() {
+        assert!(detect_heredoc_reroute("echo hi; python3 <<'PY'\nx\nPY").is_none());
+        assert!(detect_heredoc_reroute("python3 -c 'print(1)'").is_none());
+        assert!(detect_heredoc_reroute("python3 <<'PY' | cat\nx\nPY").is_none());
     }
 }

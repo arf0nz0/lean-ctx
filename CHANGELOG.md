@@ -4,6 +4,122 @@ All notable changes to lean-ctx are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 
+## [3.9.17] — 2026-08-04
+
+### Fixed
+- **Critical: eliminate "Cannot start a runtime from within a runtime" panic** —
+  Root cause (repro: [vena/ctx_read_repro](https://github.com/vena/ctx_read_repro)):
+  the post-read autonomy prefetch re-enters the read dispatch from inside the async
+  tool pipeline; nested reads hit `try_delivery_check_blocking` /
+  `try_cache_check_blocking` which called `DELIVERY_RUNTIME.block_on()` on a
+  tokio-rt-worker thread — panic. Fix: `delivery_block_on()` helper detects ambient
+  runtime via `Handle::try_current()` and spawns a scoped thread for the block_on.
+  Affects all projects with cross-file imports where prefetch selects map/signatures mode.
+- **Tool handler session locks** — replaced `Handle::block_on()` in spawn_blocking
+  contexts with `bounded_lock` spin-loops (ctx_read, ctx_delta, ctx_edit, ctx_fill,
+  ctx_knowledge, ctx_patch, ctx_smart_read) and isolated runtimes (ctx_tools gateway).
+
+### Changed
+- `multi_path.rs` session read: replaced `block_in_place` with `try_read_owned` spin-loop.
+
+## [3.9.16] — 2026-08-04
+
+### Added
+- **Cross-agent cache benchmark** — new `bench_cross_agent_cache` example for
+  measuring OCLA delivery registry performance across concurrent agents.
+- **npm postinstall: multi-method download fallback** — Windows installs now
+  try PowerShell `Invoke-WebRequest`, `curl.exe`, and `node-fetch` sequentially,
+  fixing installs behind corporate proxies and restrictive PATH configs.
+- **npm postinstall: progress + timeouts** — download progress is shown inline
+  with configurable timeouts (60s connect, 300s total), preventing silent hangs.
+- **npm postinstall: re-onboard on reinstall** — `npx lean-ctx-bin` now runs
+  `onboard` and shows the quick-start guide on reinstall, not just first install.
+
+### Fixed
+- **CRITICAL: “Cannot start a runtime from within a runtime” panic** — tool
+  handlers run inside `spawn_blocking` since #1018, where
+  `Handle::current().block_on()` panics. All occurrences replaced with safe
+  alternatives:
+  - `ctx_read`, `ctx_delta`, `ctx_fill`, `ctx_knowledge`, `ctx_smart_read`:
+    `bounded_lock::{read,write}()` spin-loops
+  - `ctx_patch`, `ctx_edit`: `spin_read!`/`spin_write!` macros
+  - `ctx_tools`: isolated `current_thread` runtime
+  - `multi_path`: `try_read_owned` spin-loop
+  This fixes the “lean-ctx internal error” affecting `.rs`/`.c` file reads when
+  cache misses triggered the post-processing write-lock path.
+- **OCLA delivery registry: mtime no longer a cache discriminator** — `blake3`
+  content hash is the sole identity for cross-agent cache hits. Previously,
+  `git checkout`/`rebase` changed mtime causing false cache misses despite
+  identical content.
+- **Flaky CI: index build SIGTERM** — integration tests now skip gracefully on
+  both SIGKILL (OOM) and SIGTERM (CI timeout) instead of panicking.
+- **npm security** — resolved Dependabot alerts for npm package dependencies.
+
+## [3.9.15] — 2026-08-04
+
+### Added
+- **Panic-safe tree-sitter with per-language blocklist** — `extract_signatures`
+  now wraps tree-sitter in `catch_unwind`. If a grammar panics, the language is
+  blocklisted for the session and subsequent calls use the regex fallback
+  instantly. Medium code files (500–6000 tok) safely get `signatures` mode
+  (~85% compression) instead of `full` (0% compression).
+
+### Fixed
+- **CRITICAL: ctx_read panic on code files (.rs, .c)** — the v3.9.14 auto-mode
+  resolver routed all code files >500 tokens through `signatures` mode, which
+  requires tree-sitter parsing. If tree-sitter panicked on any file, the Mutex
+  in the signature query cache became poisoned, causing **all** subsequent
+  code-file reads to fail with "lean-ctx internal error". Three fixes:
+  1. **`catch_unwind` around tree-sitter** — panics in grammars degrade
+     gracefully to regex signatures, never crash the session.
+  2. **Per-language blocklist** — panicked languages skip tree-sitter for the
+     rest of the session, avoiding repeated catch_unwind overhead.
+  3. **Mutex poison recovery** — `get_cached_sig_query` now uses
+     `PoisonError::into_inner()` instead of `.expect()`.
+
+## [3.9.14] — 2026-08-03
+
+### Added
+- **Shadow-only tool surface** — hook-covered clients (Cursor, Codex, Windsurf) now
+  advertise only `ctx_call` (~73 tok/turn) instead of the full MCP surface (~2400 tok).
+  Native Read/Shell/Grep/Glob are compressed transparently by installed hooks, reducing
+  per-turn tool schema overhead by ~97%. Configure with `tool_surface` config key
+  (`auto` | `shadow` | `mcp`).
+- **Multi-client hook coverage detection** — `client_hook_covered` now verifies hooks
+  for Codex (`hooks.json` PreToolUse deny + codex-pretooluse) and Windsurf
+  (`hooks.json` pre_mcp_tool_use rewrite + redirect) in addition to Cursor.
+- **Lifecycle benchmark harness** (`bench/lifecycle/`) — reproduces OpenCode-style
+  tasks with Codex CLI agents for both lean-ctx and bare arms, enabling automated
+  efficiency measurement.
+- **IDE integration rules** — `.clinerules`, `.cursorrules`, `.windsurfrules`,
+  `.github/copilot-instructions.md` for multi-IDE support.
+
+### Changed
+- **Business plan merged into Team** — the `business` billing plan is consolidated
+  into `team` (unlimited seats, 20 GB index, OIDC SSO, 365-day audit). The `business`
+  wire ID maps to `team` for backward compatibility.
+- **Auto-mode resolver compression improvements** — edit quality fallback now uses
+  `signatures` instead of `full`; `.astro` and 14 template extensions recognized as
+  code; large config files (>1000 tok) get `map` mode; large prose files (>2000 tok)
+  get `aggressive` compression. Projected session compression improves from 31.8% to 73.2%.
+
+### Fixed
+- **SDK Conformance Matrix** — unknown tool calls now return `METHOD_NOT_FOUND` (-32601)
+  instead of `INVALID_PARAMS` (-32602), preventing the INVALID_PARAMS soft-error
+  conversion (PR #1410) from making unknown tools appear successful via the HTTP API.
+- **Shell allowlist** — `python3 -m <module>` no longer flagged as bare interpreter
+  stdin, fixing benchmark harness execution.
+- **Clippy `unwrap_used`** — replaced all `unwrap()` calls across 26 production files
+  with `.expect()`, `?` propagation, or `.unwrap_or_else()`. Removed the blanket
+  `-A clippy::unwrap_used` CI allowance.
+- **Trailing-comma clippy warnings** in `policy_gate` tests.
+- **INVALID_PARAMS soft error** — Devin/Windsurf clients no longer crash on `-32602`
+  JSON-RPC errors; converted to tool-level errors with descriptive messages.
+- **Codex hooks consolidation** — standalone observe hooks migrated, MCP timeouts added.
+- **Schema diet revert** — R15/R15b experiment removed after benchmarks showed +42%
+  token overhead instead of savings.
+- **Policy gate test flakiness** — unified serial group for budget + rate tests.
+
 ## [3.9.13] — 2026-07-29
 
 ### Fixed

@@ -5,6 +5,10 @@ fn lean_ctx_bin() -> Command {
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
     cmd.env("LEAN_CTX_ACTIVE", "1");
     cmd.env("__LEAN_CTX_SKIP_EVENTS", "1");
+    // Prevent the CLI from auto-starting or contacting a daemon — integration
+    // tests must exercise the standalone code path so parallel test runs cannot
+    // pollute each other via daemon-held cross-agent cache stubs.
+    cmd.env("__LEAN_CTX_NO_DAEMON", "1");
     // These tests exercise CLI/compression behavior, not the shell allowlist
     // (which has its own unit tests in shell::exec). On CI stderr is not a TTY,
     // so `allowlist_must_enforce()` would block test scripts (`for`/`while`

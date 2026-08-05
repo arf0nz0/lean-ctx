@@ -967,7 +967,15 @@ pub(crate) fn resolve_callee_files(
     resolved
         .into_iter()
         .filter_map(|(name, files)| {
-            (files.len() == 1).then(|| (name.to_string(), files.into_iter().next().unwrap()))
+            (files.len() == 1).then(|| {
+                (
+                    name.to_string(),
+                    files
+                        .into_iter()
+                        .next()
+                        .expect("files.len() == 1 guarantees one element"),
+                )
+            })
         })
         .collect()
 }

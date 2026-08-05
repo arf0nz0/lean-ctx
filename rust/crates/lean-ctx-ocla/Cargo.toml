@@ -9,7 +9,7 @@ repository = "https://github.com/yvgude/lean-ctx"
 keywords = ["ocla", "llm", "tokens", "context", "contract"]
 categories = ["development-tools", "api-bindings"]
 readme = "README.md"
-publish = false
+
 
 [lib]
 name = "lean_ctx_ocla"

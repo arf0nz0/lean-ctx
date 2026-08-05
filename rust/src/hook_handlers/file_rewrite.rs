@@ -21,6 +21,10 @@ pub(super) fn compute_rewrite() -> String {
     if is_disabled() {
         return build_dual_allow_output();
     }
+    // Shadow-only surface: native Shell passes through without rewrite
+    if super::is_shadow_surface_active() {
+        return build_dual_allow_output();
+    }
     let binary = resolve_binary();
     let Some(input) = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT) else {
         return build_dual_allow_output();
@@ -60,6 +64,20 @@ pub(super) fn compute_rewrite() -> String {
                 "rewritable command",
             );
             build_dual_rewrite_output(tool_args.as_ref(), &rewritten)
+        } else if needs_enforcement_wrap(&cmd) {
+            // #1408: Commands that bypass compression-routing but violate the
+            // shell allowlist must still be wrapped for enforcement. Without
+            // this, compound commands (`true && docker --version`) and
+            // unconditionally-blocked builtins (`eval ...`) skip the allowlist
+            // when the hook passes them through to the native shell.
+            debug_log::log_hook_decision(
+                "rewrite",
+                &tool_name,
+                Route::LeanCtx,
+                &cmd,
+                "enforcement wrap (allowlist violation)",
+            );
+            build_dual_rewrite_output(tool_args.as_ref(), &wrap_single_command(&cmd, &binary))
         } else {
             debug_log::log_hook_decision(
                 "rewrite",
@@ -90,6 +108,26 @@ pub(super) fn rewrite_skip_reason(cmd: &str) -> &'static str {
 
 pub(super) fn is_rewritable(cmd: &str) -> bool {
     rewrite_registry::is_rewritable_command(cmd)
+}
+
+/// #1408: True when a command must be wrapped in `lean-ctx -c` purely for shell
+/// allowlist enforcement, even though it was not selected for compression routing.
+///
+/// Conditions: shell security is active (not `Off`), the command would fail the
+/// allowlist, and it can survive the quoting round-trip (no heredocs).
+fn needs_enforcement_wrap(cmd: &str) -> bool {
+    use crate::core::shell_allowlist::{ShellSecurity, passes_enforced};
+
+    if ShellSecurity::resolve() == ShellSecurity::Off {
+        return false;
+    }
+    if cmd.contains("<<") {
+        return false;
+    }
+    if cmd.starts_with("lean-ctx ") {
+        return false;
+    }
+    !passes_enforced(cmd)
 }
 
 /// True when `cmd` carries a top-level shell operator (`&&`, `||`, `;`, `|`),
@@ -459,9 +497,11 @@ pub(super) fn build_rewrite_compound(cmd: &str, binary: &str) -> Option<String> 
         return None;
     }
 
-    // Wrap-whole only when the entire compound would pass the allowlist gate;
-    // otherwise a tricky sink would be newly blocked (see doc above).
-    if crate::core::shell_allowlist::passes_enforced(cmd) {
+    // Wrap-whole when the compound passes the allowlist gate (compression), OR
+    // when security is active and the compound violates the allowlist (#1408:
+    // enforcement). The #589 "no new block" concern only applies when the user
+    // has shell_security = off — in that case lean-ctx -c won't enforce anyway.
+    if crate::core::shell_allowlist::passes_enforced(cmd) || needs_enforcement_wrap(cmd) {
         Some(wrap_single_command(cmd, binary))
     } else {
         None

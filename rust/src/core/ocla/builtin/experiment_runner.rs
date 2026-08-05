@@ -16,7 +16,11 @@ fn is_holdout(seed: &str, request_ref: &str, holdout_pct: u8) -> bool {
     hasher.update(seed.as_bytes());
     hasher.update(request_ref.as_bytes());
     let hash = hasher.finalize();
-    let bucket = u64::from_le_bytes(hash.as_bytes()[..8].try_into().unwrap()) % 100;
+    let bucket = u64::from_le_bytes(
+        hash.as_bytes()[..8]
+            .try_into()
+            .expect("blake3 hash is at least 8 bytes"),
+    ) % 100;
     bucket < u64::from(holdout_pct)
 }
 

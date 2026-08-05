@@ -137,6 +137,8 @@ async fn mcp_ctx_read_serves_cross_agent_delivery_stub_before_disk_read() {
             agent_id: remote_agent.clone(),
             conversation_id: remote_agent,
             mtime,
+            relay_content: None,
+            relay_mode: None,
         });
 
     let ctx = ToolContext {
@@ -758,4 +760,90 @@ fn monotonic_guard_handles_equal_tokens() {
     let final_tokens = 100_usize;
     let verified_saved = original_tokens.saturating_sub(final_tokens);
     assert_eq!(verified_saved, 0, "no savings when equal");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_ctx_read_serves_relay_content_from_another_agent() {
+    use crate::core::cache::SessionCache;
+    use crate::core::ocla::OclaRegistry;
+    use crate::core::ocla::types::DeliveryEntry;
+    use crate::core::session::SessionState;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("relay-live-test.rs");
+    std::fs::write(
+        &file,
+        "pub struct Config {\n    port: u16,\n    host: String,\n}\n",
+    )
+    .unwrap();
+    let path = file.to_string_lossy().to_string();
+    let bytes = std::fs::read(&file).unwrap();
+    let hash = blake3::hash(&bytes);
+    let mut blake3_prefix = [0u8; 12];
+    blake3_prefix.copy_from_slice(&hash.as_bytes()[..12]);
+    let mtime = std::fs::metadata(&file)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let relay_text = "pub struct Config { port: u16, host: String }";
+    let remote_agent = "local-99999";
+    OclaRegistry::global()
+        .delivery_registry
+        .record_delivery(DeliveryEntry {
+            blake3: blake3_prefix,
+            path: path.clone(),
+            line_count: 4,
+            token_count: 200,
+            agent_id: remote_agent.into(),
+            conversation_id: "conv-99999".into(),
+            mtime,
+            relay_content: Some(relay_text.into()),
+            relay_mode: Some("map:v2".into()),
+        });
+
+    let ctx = ToolContext {
+        project_root: dir.path().to_string_lossy().to_string(),
+        resolved_paths: std::collections::HashMap::from([("path".to_string(), path.clone())]),
+        cache: Some(Arc::new(RwLock::new(SessionCache::new()))),
+        session: Some(Arc::new(RwLock::new(SessionState::new()))),
+        ..ToolContext::default()
+    };
+    let args = json!({ "path": path, "mode": "auto" })
+        .as_object()
+        .unwrap()
+        .clone();
+
+    let output = tokio::task::block_in_place(|| CtxReadTool.handle(&args, &ctx))
+        .expect("ctx_read must serve relay content");
+
+    assert!(
+        output.text.contains("relayed from"),
+        "response must indicate relay: {}",
+        output.text
+    );
+    assert!(
+        output.text.contains(relay_text),
+        "response must contain the actual relayed code content: {}",
+        output.text
+    );
+    assert!(
+        !output.text.contains("[cross-agent ·"),
+        "must NOT be old-style metadata-only stub: {}",
+        output.text
+    );
+
+    // Verify session cache was NOT poisoned
+    let cache = ctx.cache.unwrap();
+    let cache_read = cache.read().await;
+    let entry = cache_read.get(&path);
+    assert!(
+        entry.is_none() || !entry.unwrap().full_content_delivered,
+        "relay must NOT mark full_content_delivered in session cache"
+    );
 }

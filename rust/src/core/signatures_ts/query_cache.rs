@@ -10,10 +10,13 @@ pub(crate) fn get_cached_sig_query(file_ext: &str) -> Option<Arc<Query>> {
 
     let language = get_language(file_ext)?;
     let source = get_query(file_ext)?;
-    let mut cache = SIG_QUERY_CACHE
+    let mut cache = match SIG_QUERY_CACHE
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
-        .expect("signature query cache lock poisoned");
+    {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     if let Some(query) = cache.get(&language) {
         return Some(Arc::clone(query));

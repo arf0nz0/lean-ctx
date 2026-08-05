@@ -53,15 +53,13 @@ impl McpTool for CtxSmartReadTool {
             }
         }
 
-        tokio::task::block_in_place(|| {
+        {
             let cache_lock = ctx
                 .cache
                 .as_ref()
                 .ok_or_else(|| ErrorData::internal_error("cache not available", None))?;
-            let timeout_dur =
-                crate::core::io_health::adaptive_timeout(std::time::Duration::from_secs(10));
-            let Ok(mut cache) = tokio::runtime::Handle::current()
-                .block_on(tokio::time::timeout(timeout_dur, cache_lock.write()))
+            let Some(mut cache) =
+                crate::server::bounded_lock::write(cache_lock, "ctx_smart_read cache write")
             else {
                 crate::core::io_health::record_freeze();
                 return Err(ErrorData::internal_error(
@@ -85,6 +83,6 @@ impl McpTool for CtxSmartReadTool {
                 shell_outcome: None,
                 content_blocks: None,
             })
-        })
+        }
     }
 }

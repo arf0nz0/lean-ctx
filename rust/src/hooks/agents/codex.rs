@@ -129,6 +129,57 @@ fn ensure_codex_observe_hooks(root: &mut serde_json::Value, observe_cmd: &str) -
             continue;
         };
 
+        // Migration: if observe exists as a standalone entry (separate from the
+        // lean-ctx session-start entry), merge it into the lean-ctx entry and
+        // remove the standalone to prevent duplicate 'hook: <Event>' log lines.
+        let observe_standalone_idx = entries.iter().position(|e| {
+            let hooks = e.get("hooks").and_then(|h| h.as_array());
+            let Some(hooks) = hooks else { return false };
+            // Standalone = only has observe, no other lean-ctx commands
+            hooks.len() == 1
+                && hooks[0]
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| c.contains("hook observe"))
+        });
+        let leanctx_entry_idx = entries.iter().position(|e| {
+            e.get("hooks")
+                .and_then(|h| h.as_array())
+                .is_some_and(|hooks| {
+                    hooks.iter().any(|hook| {
+                        hook.get("command")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| c.contains("lean-ctx") && !c.contains("hook observe"))
+                    })
+                })
+        });
+        if let (Some(standalone), Some(target)) = (observe_standalone_idx, leanctx_entry_idx) {
+            // Remove standalone first (shifts indices if standalone < target)
+            entries.remove(standalone);
+            let target = if standalone < target {
+                target - 1
+            } else {
+                target
+            };
+            // Merge observe into the lean-ctx entry
+            if let Some(hooks_arr) = entries[target]
+                .as_object_mut()
+                .and_then(|e| e.get_mut("hooks"))
+                .and_then(|h| h.as_array_mut())
+            {
+                let already = hooks_arr.iter().any(|h| {
+                    h.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c.contains("hook observe"))
+                });
+                if !already {
+                    hooks_arr.push(observe_hook.clone());
+                }
+            }
+            continue;
+        }
+
+        // Already properly merged — nothing to do.
         let already_has_observe = entries.iter().any(|e| {
             e.get("hooks")
                 .and_then(|h| h.as_array())
@@ -221,6 +272,15 @@ fn ensure_codex_mcp_server(
     }
     if !lean_tbl.contains_key("args") {
         lean_tbl["args"] = toml_edit::value(toml_edit::Array::new());
+    }
+
+    // Ensure adequate timeouts: lean-ctx tools like ctx_compose can take
+    // >60s on first invocation (tree-sitter parsing, index building).
+    if !lean_tbl.contains_key("startup_timeout_sec") {
+        lean_tbl["startup_timeout_sec"] = toml_edit::value(30);
+    }
+    if !lean_tbl.contains_key("tool_timeout_sec") {
+        lean_tbl["tool_timeout_sec"] = toml_edit::value(120);
     }
 
     let env = lean_tbl["env"].or_insert(toml_edit::table());
@@ -539,13 +599,29 @@ command = \"lean-ctx\"
 
     #[test]
     fn ensure_mcp_server_noop_when_already_complete() {
-        // Parent + args + an env block already carrying every desired key: the
-        // upsert must be a true no-op (no churn on every session start).
-        let input = "[mcp_servers.lean-ctx]\ncommand = \"lean-ctx\"\nargs = []\n\n\
+        // Parent + args + timeouts + an env block already carrying every desired
+        // key: the upsert must be a true no-op (no churn on every session start).
+        let input = "[mcp_servers.lean-ctx]\ncommand = \"lean-ctx\"\nargs = []\n\
+                     startup_timeout_sec = 30\ntool_timeout_sec = 120\n\n\
                      [mcp_servers.lean-ctx.env]\nLEAN_CTX_DATA_DIR = \"/Users/user/.lean-ctx\"\n";
         assert!(
             ensure_codex_mcp_server(input, "lean-ctx", &data_dir_pairs()).is_none(),
             "should not modify config when MCP section already has all keys"
+        );
+    }
+
+    #[test]
+    fn ensure_mcp_server_adds_timeouts() {
+        let input = "[mcp_servers.lean-ctx]\ncommand = \"lean-ctx\"\nargs = []\n";
+        let result = ensure_codex_mcp_server(input, "lean-ctx", &data_dir_pairs())
+            .expect("should add timeouts");
+        assert!(
+            result.contains("startup_timeout_sec = 30"),
+            "must set startup_timeout_sec"
+        );
+        assert!(
+            result.contains("tool_timeout_sec = 120"),
+            "must set tool_timeout_sec"
         );
     }
 
@@ -748,5 +824,60 @@ command = \"other\"
         let entries = root["hooks"]["PostToolUse"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["matcher"].as_str().unwrap(), ".*");
+    }
+
+    #[test]
+    fn observe_standalone_migrated_into_lean_ctx_entry() {
+        // Reproduces the bug: observe exists as a separate entry from
+        // codex-session-start, causing duplicate "hook: SessionStart" logs.
+        let mut root = serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": ".*",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/bin/lean-ctx hook observe",
+                            "timeout": 5
+                        }]
+                    },
+                    {
+                        "matcher": "startup|resume|clear",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "/bin/lean-ctx hook codex-session-start",
+                            "timeout": 15
+                        }]
+                    }
+                ]
+            }
+        });
+        let changed = ensure_codex_observe_hooks(&mut root, "/bin/lean-ctx hook observe");
+        assert!(changed, "migration must report a change");
+        let entries = root["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "standalone must be removed, leaving 1 entry"
+        );
+        let hooks = entries[0]["hooks"].as_array().unwrap();
+        assert_eq!(
+            hooks.len(),
+            2,
+            "session-start + observe merged in one entry"
+        );
+        assert!(
+            hooks.iter().any(|h| h["command"]
+                .as_str()
+                .unwrap()
+                .contains("codex-session-start")),
+            "must keep codex-session-start"
+        );
+        assert!(
+            hooks
+                .iter()
+                .any(|h| h["command"].as_str().unwrap().contains("hook observe")),
+            "must keep observe"
+        );
     }
 }

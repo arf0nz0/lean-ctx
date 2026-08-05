@@ -69,22 +69,47 @@ pub enum CandidateSet {
     /// Lean default: only `CORE_TOOL_NAMES` are advertised; everything else
     /// stays reachable through [`INVOKER`] (#575).
     LazyCore,
+    /// Hook-covered client: only the universal invoker (`ctx_call`) is
+    /// advertised. Native Read/Shell/Grep/Glob are compressed by installed
+    /// hooks; all other tools stay reachable through `ctx_call`.
+    ShadowOnly,
+}
+
+/// Inputs to [`candidate_set`]. Avoids a long bool parameter list (#clippy::fn_params_excessive_bools).
+pub struct CandidateInputs {
+    pub full_mode: bool,
+    pub unified_env: bool,
+    pub explicit_profile: bool,
+    pub hook_covered: bool,
 }
 
 /// Decides the candidate pool. Single source of truth for the `tools/list`
 /// handler AND offline measurement (`doctor overhead`), so the advertised
 /// surface and the reported overhead can never drift apart.
 #[must_use]
-pub fn candidate_set(full_mode: bool, unified_env: bool, explicit_profile: bool) -> CandidateSet {
-    if full_mode {
+pub fn candidate_set(inp: &CandidateInputs) -> CandidateSet {
+    if inp.full_mode {
         CandidateSet::Full
-    } else if unified_env {
+    } else if inp.unified_env {
         CandidateSet::Unified
-    } else if explicit_profile {
+    } else if inp.explicit_profile {
         CandidateSet::ProfileAuthoritative
+    } else if inp.hook_covered && is_shadow_surface_enabled() {
+        CandidateSet::ShadowOnly
     } else {
         CandidateSet::LazyCore
     }
+}
+
+/// Whether the shadow-only tool surface is enabled (config or env).
+fn is_shadow_surface_enabled() -> bool {
+    if let Ok(v) = std::env::var("LEAN_CTX_TOOL_SURFACE") {
+        return v.eq_ignore_ascii_case("shadow") || v.eq_ignore_ascii_case("auto");
+    }
+    let cfg = crate::core::config::Config::load();
+    // Only "mcp" explicitly disables shadow surface; "auto", "shadow", and
+    // unset all enable it (when the caller already confirmed hook_covered).
+    !matches!(cfg.tool_surface.as_deref(), Some("mcp"))
 }
 
 /// Whether the user explicitly pinned a tool profile (config key, custom tool
@@ -194,14 +219,20 @@ pub fn advertised_tool_defs_default() -> Vec<rmcp::model::Tool> {
     let full_mode = crate::tool_defs::is_full_mode();
     let registry = crate::server::registry::build_registry();
 
-    let candidate = candidate_set(
+    let candidate = candidate_set(&CandidateInputs {
         full_mode,
-        std::env::var("LEAN_CTX_UNIFIED").is_ok(),
-        explicit_profile(&cfg),
-    );
+        unified_env: std::env::var("LEAN_CTX_UNIFIED").is_ok(),
+        explicit_profile: explicit_profile(&cfg),
+        hook_covered: false, // offline measurement uses worst-case (no hook coverage)
+    });
     let pool: Vec<rmcp::model::Tool> = match candidate {
         CandidateSet::Full | CandidateSet::ProfileAuthoritative => registry.tool_defs(),
         CandidateSet::Unified => crate::tool_defs::unified_tool_defs(),
+        CandidateSet::ShadowOnly => registry
+            .tool_defs()
+            .into_iter()
+            .filter(|t| t.name.as_ref() == INVOKER)
+            .collect(),
         CandidateSet::LazyCore => {
             let core = crate::tool_defs::core_tool_names();
             registry
@@ -637,5 +668,92 @@ mod tests {
     fn resolve_auto_resolves_to_concrete_profile() {
         let resolved = resolve_auto_profile(&ToolProfile::Auto);
         assert_ne!(resolved, ToolProfile::Auto);
+    }
+
+    // ── Shadow-Only surface tests ──────────────────────────────
+
+    #[test]
+    fn shadow_only_candidate_when_hook_covered() {
+        // hook_covered=true + default surface = ShadowOnly
+        let c = candidate_set(&CandidateInputs {
+            full_mode: false,
+            unified_env: false,
+            explicit_profile: false,
+            hook_covered: true,
+        });
+        assert_eq!(c, CandidateSet::ShadowOnly);
+    }
+
+    #[test]
+    fn shadow_only_overridden_by_full_mode() {
+        let c = candidate_set(&CandidateInputs {
+            full_mode: true,
+            unified_env: false,
+            explicit_profile: false,
+            hook_covered: true,
+        });
+        assert_eq!(
+            c,
+            CandidateSet::Full,
+            "LEAN_CTX_FULL_TOOLS=1 must override shadow-only"
+        );
+    }
+
+    #[test]
+    fn shadow_only_overridden_by_explicit_profile() {
+        let c = candidate_set(&CandidateInputs {
+            full_mode: false,
+            unified_env: false,
+            explicit_profile: true,
+            hook_covered: true,
+        });
+        assert_eq!(
+            c,
+            CandidateSet::ProfileAuthoritative,
+            "explicit profile must override shadow-only"
+        );
+    }
+
+    #[test]
+    fn lazy_core_when_not_hook_covered() {
+        let c = candidate_set(&CandidateInputs {
+            full_mode: false,
+            unified_env: false,
+            explicit_profile: false,
+            hook_covered: false,
+        });
+        assert_eq!(
+            c,
+            CandidateSet::LazyCore,
+            "non-hook client must get LazyCore"
+        );
+    }
+
+    #[test]
+    fn shadow_only_surface_stays_within_budget() {
+        const SHADOW_BUDGET: usize = 200;
+
+        let _guard = crate::core::data_dir::isolated_data_dir();
+        let defs: Vec<_> = crate::server::registry::build_registry()
+            .tool_defs()
+            .into_iter()
+            .filter(|t| t.name.as_ref() == INVOKER)
+            .collect();
+        assert_eq!(
+            defs.len(),
+            1,
+            "shadow-only pool must contain exactly ctx_call"
+        );
+        assert_eq!(defs[0].name.as_ref(), "ctx_call");
+
+        let desc = defs[0].description.as_deref().unwrap_or("");
+        let schema = serde_json::to_string(&defs[0].input_schema).unwrap_or_default();
+        let cost =
+            crate::core::tokens::count_tokens(desc) + crate::core::tokens::count_tokens(&schema);
+        eprintln!("SHADOW-ONLY: ctx_call = {cost} tok (budget {SHADOW_BUDGET})");
+        assert!(
+            cost <= SHADOW_BUDGET,
+            "ctx_call costs {cost} tok (shadow budget {SHADOW_BUDGET})"
+        );
     }
 }

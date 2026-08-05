@@ -75,6 +75,17 @@ fn is_shadow_mode_active() -> bool {
     crate::core::config::Config::load().shadow_mode
 }
 
+/// True when `tool_surface = "shadow"` is explicitly configured.
+/// In this mode, native Read/Shell/Grep/Glob pass through unmodified;
+/// hooks only observe for metrics, never redirect or compress.
+fn is_shadow_surface_active() -> bool {
+    if let Ok(v) = std::env::var("LEAN_CTX_TOOL_SURFACE") {
+        return v.eq_ignore_ascii_case("shadow");
+    }
+    let cfg = crate::core::config::Config::load();
+    matches!(cfg.tool_surface.as_deref(), Some("shadow"))
+}
+
 fn log_shadow_intercept(tool: &str, detail: &str) {
     if !is_shadow_mode_active() {
         return;

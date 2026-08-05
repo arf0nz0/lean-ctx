@@ -59,6 +59,8 @@ pub struct BuiltinDeliveryRegistry {
     mtime_index: DashMap<String, Vec<(u64, [u8; 12])>>,
     stubs_served: AtomicU64,
     tokens_saved: AtomicU64,
+    relay_served: AtomicU64,
+    relay_tokens_saved: AtomicU64,
     max_entries: usize,
     ttl_secs: u64,
 }
@@ -82,6 +84,8 @@ impl BuiltinDeliveryRegistry {
             eviction_index: Mutex::new(EvictionIndex::default()),
             stubs_served: AtomicU64::new(0),
             tokens_saved: AtomicU64::new(0),
+            relay_served: AtomicU64::new(0),
+            relay_tokens_saved: AtomicU64::new(0),
             max_entries: max_entries.max(1),
             ttl_secs: ttl_minutes.saturating_mul(60),
         }
@@ -95,6 +99,8 @@ impl BuiltinDeliveryRegistry {
             eviction_index: Mutex::new(EvictionIndex::default()),
             stubs_served: AtomicU64::new(0),
             tokens_saved: AtomicU64::new(0),
+            relay_served: AtomicU64::new(0),
+            relay_tokens_saved: AtomicU64::new(0),
             max_entries,
             ttl_secs,
         }
@@ -196,7 +202,7 @@ impl DeliveryRegistry for BuiltinDeliveryRegistry {
     fn check_delivery(
         &self,
         blake3: &[u8; 12],
-        mtime: u64,
+        _mtime: u64,
         path: &str,
         requester_agent_id: Option<&str>,
         requester_conversation_id: Option<&str>,
@@ -221,9 +227,6 @@ impl DeliveryRegistry for BuiltinDeliveryRegistry {
 
         let now = Self::now_epoch();
         for (key, record) in candidates {
-            if record.mtime != mtime {
-                continue;
-            }
             if self.is_expired_at(&record, now) {
                 let mut index = self.eviction_index.lock().expect("delivery index poisoned");
                 self.mtime_index_remove(&key.path, record.mtime, key.blake3);
@@ -257,8 +260,12 @@ impl DeliveryRegistry for BuiltinDeliveryRegistry {
             serving_agent: record.agent_id.clone(),
             original_agent: record.agent_id.clone(),
         });
+        if record.relay_content.is_some() {
+            self.relay_served.fetch_add(1, Ordering::Relaxed);
+            self.relay_tokens_saved
+                .fetch_add(estimated_tokens, Ordering::Relaxed);
+        }
     }
-
     fn record_delivery(&self, entry: DeliveryEntry) -> lean_ctx_ocla::DeliveryRecordResult {
         if !Self::is_valid_entry(&entry) {
             return lean_ctx_ocla::DeliveryRecordResult {
@@ -280,6 +287,8 @@ impl DeliveryRegistry for BuiltinDeliveryRegistry {
             conversation_id: entry.conversation_id,
             read_at: Self::now_epoch(),
             mtime: record_mtime,
+            relay_content: entry.relay_content,
+            relay_mode: entry.relay_mode,
             fresh: true,
         };
         let mut index = self.eviction_index.lock().expect("delivery index poisoned");
@@ -318,6 +327,8 @@ impl DeliveryRegistry for BuiltinDeliveryRegistry {
             tokens_saved: self.tokens_saved.load(Ordering::Relaxed),
             unique_paths: unique_paths.len(),
             unique_agents: unique_agents.len(),
+            relay_served: self.relay_served.load(Ordering::Relaxed),
+            relay_tokens_saved: self.relay_tokens_saved.load(Ordering::Relaxed),
         }
     }
 }
@@ -335,6 +346,8 @@ mod tests {
             agent_id: agent.into(),
             conversation_id: format!("conv-{agent}"),
             mtime,
+            relay_content: None,
+            relay_mode: None,
         }
     }
 
@@ -406,15 +419,15 @@ mod tests {
     }
 
     #[test]
-    fn different_mtime_returns_miss() {
+    fn different_mtime_same_hash_still_hits() {
+        // blake3 is the content identity; mtime changes on checkout/rebase
+        // should not invalidate entries with identical content (#1415).
         let reg = BuiltinDeliveryRegistry::new();
         let hash = [2u8; 12];
         reg.record_delivery(test_entry("src/lib.rs", "agent-b", hash, 1000));
 
-        assert!(
-            reg.check_delivery(&hash, 2000, "src/lib.rs", Some("agent-c"), None)
-                .is_none()
-        );
+        let result = reg.check_delivery(&hash, 2000, "src/lib.rs", Some("agent-c"), None);
+        assert!(result.is_some(), "same blake3 must hit regardless of mtime");
     }
 
     #[test]
@@ -629,5 +642,69 @@ mod tests {
             reg.max_entries, 8192,
             "max_entries must not be clamped to 256"
         );
+    }
+
+    #[test]
+    fn cross_agent_relay_serves_compressed_output() {
+        let reg = BuiltinDeliveryRegistry::new();
+        let hash = [10u8; 12];
+        let mut entry = test_entry("src/lib.rs", "agent-a", hash, 500);
+        entry.relay_content = Some("fn main() { ... }".into());
+        entry.relay_mode = Some("map:v2".into());
+        reg.record_delivery(entry);
+
+        let record = reg.check_delivery(&hash, 500, "src/lib.rs", Some("agent-b"), None);
+        let record = record.expect("cross-agent relay must hit");
+        assert_eq!(record.relay_content.as_deref(), Some("fn main() { ... }"));
+        assert_eq!(record.relay_mode.as_deref(), Some("map:v2"));
+    }
+
+    #[test]
+    fn different_pid_agents_get_relay_hit() {
+        let reg = BuiltinDeliveryRegistry::new();
+        let hash = [11u8; 12];
+        let mut entry = test_entry("src/app.rs", "local-1234", hash, 600);
+        entry.relay_content = Some("pub struct App;".into());
+        entry.relay_mode = Some("signatures:v2".into());
+        reg.record_delivery(entry);
+
+        let hit = reg.check_delivery(&hash, 600, "src/app.rs", Some("local-5678"), None);
+        assert!(hit.is_some(), "different PID agents must get relay hit");
+        assert_eq!(
+            hit.unwrap().relay_content.as_deref(),
+            Some("pub struct App;")
+        );
+    }
+
+    #[test]
+    fn relay_content_capped_at_8kb() {
+        let reg = BuiltinDeliveryRegistry::new();
+        let hash = [12u8; 12];
+        let big_content = "x".repeat(9000);
+        let mut entry = test_entry("src/big.rs", "agent-a", hash, 700);
+        entry.relay_content = Some(big_content);
+        entry.relay_mode = Some("map:v2".into());
+        reg.record_delivery(entry);
+
+        let record = reg.check_delivery(&hash, 700, "src/big.rs", Some("agent-b"), None);
+        let record = record.expect("hit expected even without relay content");
+        assert_eq!(
+            record.relay_content.as_ref().map(|c| c.len() > 8192),
+            Some(true),
+            "oversized relay stored but capping happens at record_cross_agent_delivery level"
+        );
+    }
+
+    #[test]
+    fn same_agent_no_self_hit() {
+        let reg = BuiltinDeliveryRegistry::new();
+        let hash = [13u8; 12];
+        let mut entry = test_entry("src/self.rs", "local-9999", hash, 800);
+        entry.relay_content = Some("self content".into());
+        entry.relay_mode = Some("map:v2".into());
+        reg.record_delivery(entry);
+
+        let hit = reg.check_delivery(&hash, 800, "src/self.rs", Some("local-9999"), None);
+        assert!(hit.is_none(), "same agent must not get self-hit");
     }
 }

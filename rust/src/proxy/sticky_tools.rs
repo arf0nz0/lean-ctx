@@ -65,7 +65,9 @@ pub fn ensure_tool_present(conv_id: u64, doc: &mut Value) -> bool {
         Some(_) => return false,
         None => {
             doc["tools"] = Value::Array(Vec::new());
-            doc["tools"].as_array_mut().unwrap()
+            doc["tools"]
+                .as_array_mut()
+                .expect("tools just initialized as array")
         }
     };
 

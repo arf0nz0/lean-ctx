@@ -228,7 +228,7 @@ fn detect_single_agent() -> Option<String> {
         .collect();
 
     if installed.len() == 1 {
-        Some(installed.into_iter().next().unwrap())
+        installed.into_iter().next()
     } else {
         None
     }

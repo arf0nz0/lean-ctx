@@ -295,7 +295,11 @@ pub(super) fn run_migrate_check(json: bool) -> i32 {
                 }))
                 .collect::<Vec<_>>(),
         });
-        println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload)
+                .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"))
+        );
         return i32::from(!ready);
     }
 

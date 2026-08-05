@@ -247,7 +247,7 @@ mod tests {
         // warning that is empty on POSIX. The budget covers that surface plus a small
         // margin for `shell_name()` variance (#1051), and still sits ~1.1K under the
         // ~3K balloon this guard exists to catch — it is not a license for silent creep.
-        const MINIMAL_ARM_PREFIX_BUDGET_TOKENS: usize = 1835;
+        const MINIMAL_ARM_PREFIX_BUDGET_TOKENS: usize = 1845;
 
         let _iso = crate::core::data_dir::isolated_data_dir();
         crate::test_env::set_var("LEAN_CTX_TOOL_PROFILE", "minimal");

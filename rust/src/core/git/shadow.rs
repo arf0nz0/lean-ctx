@@ -96,7 +96,8 @@ pub(crate) fn snapshot(project: &Path, message: &str) -> Result<Checkpoint, Stri
             files_changed: Some(0),
         });
     }
-    Err(commit.ok_stdout().unwrap_err())
+    commit.ok_stdout()?;
+    Err("git commit failed".to_string())
 }
 
 /// Most recent checkpoints, newest first.

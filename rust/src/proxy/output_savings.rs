@@ -131,7 +131,10 @@ pub fn from_cohorts(cohorts: &HashMap<String, CohortUsage>) -> Savings {
         };
     }
     // Safe: presence + counts checked above.
-    let (control, treatment) = (control.unwrap(), treatment.unwrap());
+    let (control, treatment) = (
+        control.expect("control cohort present when control_n > 0"),
+        treatment.expect("treatment cohort present when treatment_n > 0"),
+    );
     match measured(control, treatment) {
         Some(m) => Savings::Measured(m),
         None => estimated(),

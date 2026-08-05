@@ -42,6 +42,10 @@ pub(crate) fn reset_injection_cache() {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
+/// Max tokens for the injected rules suffix. Prevents rules from dominating
+/// the response and triggering turn-budget truncation of file content (#1406).
+const MAX_RULES_SUFFIX_TOKENS: usize = 800;
+
 /// Discover and format rules applicable to `file_path` that haven't been
 /// injected yet in this session. Returns an empty string when no new rules
 /// apply or when the client natively handles rule injection.
@@ -60,12 +64,23 @@ pub(crate) fn rules_suffix_for_read(
     }
 
     let mut parts = Vec::new();
+    let mut token_count = 0;
     for rule in &rules {
         let key = format!("{}:{}", rule.source, blake3_short(&rule.content));
         if already_injected(&key) {
             continue;
         }
-        parts.push(format!("[From: {}]\n{}", rule.source, rule.content.trim()));
+        let part = format!("[From: {}]\n{}", rule.source, rule.content.trim());
+        let part_tokens = crate::core::tokens::count_tokens(&part);
+        if token_count + part_tokens > MAX_RULES_SUFFIX_TOKENS && !parts.is_empty() {
+            parts.push(format!(
+                "[… {} more rule(s) omitted — use auto_inject_rules=false to disable]",
+                rules.len() - parts.len()
+            ));
+            break;
+        }
+        token_count += part_tokens;
+        parts.push(part);
     }
 
     if parts.is_empty() {
@@ -83,11 +98,13 @@ pub(crate) fn rules_suffix_for_read(
 /// Returns true when the client's native harness already injects rules on
 /// file reads, so lean-ctx should NOT duplicate them.
 ///
-/// Currently no client does this natively when lean-ctx intercepts the read
-/// (the whole point of #1325), but this gate lets us skip injection if a
-/// future client version adds native support.
-fn client_natively_injects_rules(_client_id: &str) -> bool {
-    false
+/// #1406: Claude Code loads CLAUDE.md + AGENTS.md + .claude/rules/ at session
+/// start; Cursor loads .cursor/rules/ + AGENTS.md via workspace rules. Both
+/// have the rules in their system prompt already — re-injecting them via
+/// ctx_read wastes tokens and can trigger turn-budget truncation.
+fn client_natively_injects_rules(client_id: &str) -> bool {
+    let lower = client_id.to_lowercase();
+    lower.contains("claude") || lower.contains("cursor")
 }
 
 // ── Discovery ───────────────────────────────────────────────────────────────

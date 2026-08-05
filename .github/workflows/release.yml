@@ -367,6 +367,15 @@ jobs:
             echo "crates.io already has lean-ctx ${CRATE_VERSION} — skipping publish."
             exit 0
           fi
+          # Publish lean-ctx-ocla first (workspace dependency).
+          OCLA_VERSION="$(grep -m1 '^version' crates/lean-ctx-ocla/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if ! curl -fsSL -H "User-Agent: lean-ctx-release" \
+               "https://crates.io/api/v1/crates/lean-ctx-ocla/${OCLA_VERSION}" >/dev/null 2>&1; then
+            echo "Publishing lean-ctx-ocla ${OCLA_VERSION} to crates.io first..."
+            cargo publish --allow-dirty --no-verify --token "${CARGO_REGISTRY_TOKEN}" -p lean-ctx-ocla
+            echo "Waiting 30s for crates.io index propagation..."
+            sleep 30
+          fi
           # --no-verify: rmcp 2.2.0 on crates.io has a compile bug (from_bytes_stream
           # vs from_byte_stream); our [patch.crates-io] fixes it but is stripped by
           # cargo package. Binary builds use --locked and are unaffected.

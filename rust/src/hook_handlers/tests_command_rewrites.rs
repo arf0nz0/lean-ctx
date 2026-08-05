@@ -277,31 +277,46 @@ fn compound_skips_already_rewritten() {
 }
 
 #[test]
-fn compound_tricky_interpreter_sink_left_raw() {
-    // Piping into `python3 -c` (not allowlisted) must NOT be wrapped — wrapping
-    // would newly subject the interpreter to the gate and block a command the
-    // agent's shell ran fine before (#589, compat-first).
+fn compound_tricky_interpreter_sink_wrapped_for_enforcement() {
+    // #1408: Non-allowlisted sinks (python3 -c) in compounds are now wrapped
+    // for enforcement when shell_security != Off. This closes the bypass where
+    // `true && docker --version` would skip the allowlist.
     let result = with_test_allowlist(|| {
         build_rewrite_compound("git log | python3 -c 'print(1)'", "lean-ctx")
     });
-    assert_eq!(result, None);
+    assert_eq!(
+        result,
+        Some(expect_wrapped(
+            "git log | python3 -c 'print(1)'",
+            "lean-ctx"
+        ))
+    );
 }
 
 #[test]
-fn compound_tricky_non_allowlisted_sink_left_raw() {
-    // `kubectl` is rewritable but deliberately excluded from the defaults; the
-    // compound therefore fails the gate and stays raw rather than being blocked.
+fn compound_non_allowlisted_sink_wrapped_for_enforcement() {
+    // #1408: Non-allowlisted commands in compounds are now wrapped for enforcement.
     let result =
         with_test_allowlist(|| build_rewrite_compound("git log | kubectl apply -f -", "lean-ctx"));
-    assert_eq!(result, None);
+    assert_eq!(
+        result,
+        Some(expect_wrapped("git log | kubectl apply -f -", "lean-ctx"))
+    );
 }
 
 #[test]
-fn compound_tricky_chain_sink_left_raw() {
+fn compound_chain_non_allowlisted_wrapped_for_enforcement() {
+    // #1408: Chain with non-allowlisted command is wrapped for enforcement.
     let result = with_test_allowlist(|| {
         build_rewrite_compound("cargo test && python3 -c 'print(1)'", "lean-ctx")
     });
-    assert_eq!(result, None);
+    assert_eq!(
+        result,
+        Some(expect_wrapped(
+            "cargo test && python3 -c 'print(1)'",
+            "lean-ctx"
+        ))
+    );
 }
 
 #[test]
@@ -320,10 +335,10 @@ fn rewrite_candidate_wraps_clean_compound() {
 }
 
 #[test]
-fn rewrite_candidate_leaves_tricky_compound_untouched() {
-    // End-to-end: a tricky compound must not be re-wrapped by the single-command
-    // `is_rewritable` fallback after the compound handler declines it (#589).
-    let result =
-        with_test_allowlist(|| rewrite_candidate("git log | python3 -c 'print(1)'", "lean-ctx"));
-    assert_eq!(result, None);
+fn rewrite_candidate_wraps_non_allowlisted_compound_for_enforcement() {
+    // #1408: End-to-end: a compound with non-allowlisted sink is wrapped for
+    // enforcement (closes the bypass where compounds skipped the allowlist).
+    let cmd = "git log | python3 -c 'print(1)'";
+    let result = with_test_allowlist(|| rewrite_candidate(cmd, "lean-ctx"));
+    assert_eq!(result, Some(expect_wrapped(cmd, "lean-ctx")));
 }

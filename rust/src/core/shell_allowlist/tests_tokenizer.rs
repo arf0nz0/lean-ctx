@@ -87,6 +87,23 @@ fn skip_env_multiple_assignments() {
     assert_eq!(result.trim(), "cargo test");
 }
 
+#[test]
+fn skip_env_export_builtin_and_following_assignment() {
+    assert_eq!(
+        skip_env_assignments("export PATH=/usr/bin:$PATH").trim(),
+        ""
+    );
+    assert_eq!(
+        skip_env_assignments("export PATH=/usr/bin:$PATH python3 script.py").trim(),
+        "python3 script.py"
+    );
+}
+
+#[test]
+fn extract_base_export_only_is_empty() {
+    assert_eq!(extract_base_from_segment("export PATH=/usr/bin:$PATH"), "");
+}
+
 // --- extract_base_from_segment with quoted commands ---
 
 #[test]

@@ -109,28 +109,134 @@ pub(crate) fn shorten_path(path: &str, home: &str) -> String {
     }
 }
 
+/// Returns the byte offset where the root (top-level) section ends — i.e. the
+/// start of the first `[table]` / `[[array-of-tables]]` header line. Keys
+/// inserted before this offset live in the root section. Inserting at the end
+/// of the file instead would wrongly place a root key inside whatever table
+/// happens to be last (e.g. `[updates]`). If no section header is present,
+/// returns `content.len()`.
+fn root_section_end(content: &str) -> usize {
+    let mut offset = 0;
+    for line in content.lines() {
+        if line.trim_start().starts_with('[') {
+            return offset;
+        }
+        // `lines()` strips the terminator; account for the consumed `\n`.
+        offset += line.len() + 1;
+    }
+    content.len()
+}
+
 fn upsert_toml_key(content: &mut String, key: &str, value: &str) {
     let pattern = format!("{key} = ");
-    if let Some(start) = content.find(&pattern) {
+    let root_end = root_section_end(content);
+    // Only touch a root-section occurrence so we never clobber a same-named key
+    // inside a table (e.g. `compression_level` under `[profiles.cloud]`).
+    if let Some(start) = content[..root_end].find(&pattern) {
         let line_end = content[start..]
             .find('\n')
             .map_or(content.len(), |p| start + p);
         content.replace_range(start..line_end, &format!("{key} = \"{value}\""));
     } else {
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
+        // Insert into the root section — before the first `[section]` header —
+        // never at the end of the file (which would land the key in the last
+        // table, e.g. `[updates]`).
+        let insert_at = root_end;
+        let mut prefix = String::new();
+        if insert_at > 0 && !content[..insert_at].ends_with('\n') {
+            prefix.push('\n');
         }
-        content.push_str(&format!("{key} = \"{value}\"\n"));
+        let new_line = format!("{prefix}{key} = \"{value}\"\n");
+        content.insert_str(insert_at, &new_line);
     }
 }
 
 fn remove_toml_key(content: &mut String, key: &str) {
     let pattern = format!("{key} = ");
-    if let Some(start) = content.find(&pattern) {
+    let root_end = root_section_end(content);
+    if let Some(start) = content[..root_end].find(&pattern) {
         let line_end = content[start..]
             .find('\n')
             .map_or(content.len(), |p| start + p + 1);
         content.replace_range(start..line_end, "");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_inserts_new_key_into_root_before_section() {
+        let mut content =
+            String::from("memory_profile = \"balanced\"\n\n[updates]\nauto_update = true\n");
+        upsert_toml_key(&mut content, "compression_level", "lite");
+        let updates_pos = content.find("[updates]").unwrap();
+        let key_pos = content.find("compression_level").unwrap();
+        assert!(key_pos < updates_pos, "root key must precede [updates]");
+        assert!(
+            !content[updates_pos..].contains("compression_level"),
+            "key must not leak into [updates]"
+        );
+        assert!(content.contains("compression_level = \"lite\""));
+    }
+
+    #[test]
+    fn upsert_inserts_root_key_when_section_is_first_line() {
+        let mut content = String::from("[updates]\nauto_update = true\n");
+        upsert_toml_key(&mut content, "compression_level", "standard");
+        assert!(
+            content.starts_with("compression_level = \"standard\"\n"),
+            "root key should be inserted before the leading section header"
+        );
+    }
+
+    #[test]
+    fn upsert_updates_only_root_occurrence() {
+        let mut content = String::from(
+            "compression_level = \"off\"\n\n[profiles.cloud]\ncompression_level = \"max\"\n",
+        );
+        upsert_toml_key(&mut content, "compression_level", "lite");
+        assert!(content.starts_with("compression_level = \"lite\""));
+        assert!(
+            content.contains("[profiles.cloud]\ncompression_level = \"max\""),
+            "profile-scoped value must be left untouched"
+        );
+    }
+
+    #[test]
+    fn upsert_inserts_into_empty_content() {
+        let mut content = String::new();
+        upsert_toml_key(&mut content, "compression_level", "lite");
+        assert_eq!(content, "compression_level = \"lite\"\n");
+    }
+
+    #[test]
+    fn remove_only_deletes_root_occurrence() {
+        let mut content =
+            String::from("terse_agent = true\n\n[profiles.local]\nterse_agent = true\n");
+        remove_toml_key(&mut content, "terse_agent");
+        assert!(
+            !content.starts_with("terse_agent"),
+            "root key should be removed"
+        );
+        assert!(
+            content.contains("[profiles.local]\nterse_agent = true"),
+            "profile-scoped value must remain"
+        );
+    }
+
+    #[test]
+    fn root_section_end_handles_no_section() {
+        assert_eq!(root_section_end("a = 1\nb = 2\n"), 12);
+        assert_eq!(root_section_end(""), 0);
+    }
+
+    #[test]
+    fn root_section_end_finds_first_header() {
+        assert_eq!(root_section_end("a = 1\n[updates]\nb = 2\n"), 6);
+        assert_eq!(root_section_end("[updates]\n"), 0);
+        assert_eq!(root_section_end("a = 1\n[[items]]\n"), 6);
     }
 }
 

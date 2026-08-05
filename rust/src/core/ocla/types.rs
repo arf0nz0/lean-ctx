@@ -554,6 +554,13 @@ pub struct DeliveryRecord {
     pub conversation_id: String,
     pub read_at: u64,
     pub mtime: u64,
+    /// Compressed output relayed from the producing agent (map/signatures).
+    /// Capped at 8KB to bound daemon memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_content: Option<String>,
+    /// Mode key that produced relay_content (e.g. "map:v2").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_mode: Option<String>,
     pub fresh: bool,
 }
 
@@ -569,6 +576,13 @@ pub struct DeliveryEntry {
     pub agent_id: String,
     pub conversation_id: String,
     pub mtime: u64,
+    /// Compressed output relayed from the producing agent (map/signatures).
+    /// Capped at 8KB to bound daemon memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_content: Option<String>,
+    /// Mode key that produced relay_content (e.g. "map:v2").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_mode: Option<String>,
 }
 
 /// Result of an idempotent delivery-record attempt.
@@ -588,6 +602,10 @@ pub struct DeliveryStats {
     pub tokens_saved: u64,
     pub unique_paths: usize,
     pub unique_agents: usize,
+    #[serde(default)]
+    pub relay_served: u64,
+    #[serde(default)]
+    pub relay_tokens_saved: u64,
 }
 
 /// Canonical, payload-free admission contract for one A2A relay.

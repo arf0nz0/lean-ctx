@@ -61,21 +61,48 @@ fn wal_bytes() -> u64 {
     std::fs::metadata(&wal).map_or(0, |m| m.len())
 }
 
+/// Maximum attempts to open the DB when hitting transient WAL lock contention.
+/// Mirrors the retry strategy in `property_graph::CodeGraph::open` (#1409).
+const DB_OPEN_MAX_ATTEMPTS: u32 = 8;
+
 fn open_db() -> Option<Connection> {
     let path = db_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn = Connection::open(&path).ok()?;
+
+    // #1409: Multiple MCP stdio processes (Devin/Windsurf) can race on WAL init.
+    // PRAGMA journal_mode=WAL + CREATE TABLE can fail with SQLITE_BUSY even with
+    // busy_timeout set, because the busy handler is not invoked for initial schema
+    // DDL (same issue as graph.db — see property_graph/mod.rs:92). Retry with
+    // exponential backoff.
+    for attempt in 0..DB_OPEN_MAX_ATTEMPTS {
+        match try_open_db(&path) {
+            Ok(conn) => return Some(conn),
+            Err(e) => {
+                if attempt + 1 < DB_OPEN_MAX_ATTEMPTS && is_transient_sqlite_error(&e) {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        50 * u64::from(attempt + 1),
+                    ));
+                    continue;
+                }
+                tracing::warn!(
+                    "archive_fts: failed to open index.db after {} attempts: {e}",
+                    attempt + 1
+                );
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn try_open_db(path: &std::path::Path) -> Result<Connection, rusqlite::Error> {
+    let conn = Connection::open(path)?;
     conn.execute_batch(
-        // `busy_timeout` lets a checkpoint wait for a concurrent reader instead of
-        // bailing immediately, and an explicit `wal_autocheckpoint` keeps the WAL
-        // bounded even when several lean-ctx processes (daemon + MCP + CLI) hold
-        // the same DB open. Without these, a stale reader (e.g. an orphaned
-        // daemon) blocked autocheckpoint and the WAL grew to 256 MB in the field.
         "PRAGMA journal_mode=WAL;
          PRAGMA synchronous=NORMAL;
-         PRAGMA busy_timeout=5000;
+         PRAGMA busy_timeout=10000;
          PRAGMA wal_autocheckpoint=1000;
          CREATE TABLE IF NOT EXISTS archive_meta (
              archive_id TEXT PRIMARY KEY,
@@ -89,9 +116,22 @@ fn open_db() -> Option<Connection> {
              content,
              archive_id UNINDEXED
          );",
+    )?;
+    Ok(conn)
+}
+
+fn is_transient_sqlite_error(e: &rusqlite::Error) -> bool {
+    use rusqlite::ffi;
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            ffi::Error {
+                code: ffi::ErrorCode::DatabaseBusy | ffi::ErrorCode::DatabaseLocked,
+                ..
+            },
+            _
+        )
     )
-    .ok()?;
-    Some(conn)
 }
 
 pub(crate) fn index_entry(archive_id: &str, tool: &str, command: &str, content: &str) {
@@ -132,21 +172,26 @@ pub(crate) fn index_entry(archive_id: &str, tool: &str, command: &str, content: 
     }
 
     // Bound the WAL even between cap-enforcement passes: if a concurrent reader
-    // held back autocheckpoint and the sidecar ballooned, reclaim it now.
+    // held back autocheckpoint and the sidecar ballooned, try to reclaim it now.
+    // #1409: best-effort — don't block on lock contention from stale processes.
     if wal_bytes() > WAL_TRUNCATE_THRESHOLD_BYTES {
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
     }
 }
 
 /// Enforces the on-disk size cap by deleting the oldest archive entries (by
 /// `created_at`) in batches until the DB is back under budget, then reclaims
 /// space with VACUUM. Operates on an already-locked connection.
+///
+/// #1409: VACUUM and checkpoint are best-effort — if they fail with BUSY (another
+/// process holds the WAL), we skip them rather than blocking tool calls. The cap
+/// enforcement (deletes) still runs; space reclamation happens on the next
+/// successful pass.
 fn enforce_cap_locked(conn: &Connection) {
     let cap = max_db_bytes();
     if db_size_bytes() <= cap {
         return;
     }
-    // Delete in batches of ~10% of current rows (min 50) until under cap or empty.
     for _ in 0..50 {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM archive_meta", [], |row| row.get(0))
@@ -171,11 +216,15 @@ fn enforce_cap_locked(conn: &Connection) {
                 params![id],
             );
             let _ = conn.execute("DELETE FROM archive_fts WHERE archive_id = ?1", params![id]);
-            // Drop the backing `.txt`/`.meta.json` too — deleting only the DB row
-            // would orphan the (much larger) content file on disk (#417).
             super::archive::remove_files(id);
         }
-        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+        // Best-effort reclamation: skip if another process holds the WAL lock.
+        if conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .is_ok()
+        {
+            let _ = conn.execute_batch("VACUUM;");
+        }
         if db_size_bytes() <= cap {
             break;
         }

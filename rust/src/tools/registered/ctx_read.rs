@@ -897,6 +897,8 @@ impl CtxReadTool {
                     mtime,
                     0,
                     output_tokens,
+                    None,
+                    None,
                 );
             }
         }
@@ -906,12 +908,17 @@ impl CtxReadTool {
         let mut traversal_working_set: Vec<String> = Vec::new();
         let project_root_snapshot;
         {
-            let rt = tokio::runtime::Handle::current();
-            let session_guard = rt.block_on(tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                session_lock.write(),
-            ));
-            if let Ok(mut session) = session_guard {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let session_guard = loop {
+                if let Ok(g) = session_lock.clone().try_write_owned() {
+                    break Some(g);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            };
+            if let Some(mut session) = session_guard {
                 session.touch_file(path, file_ref.as_deref(), &resolved_mode, original);
                 // Capture the recent working set (under the lock) so the
                 // background thread can record a traversal/co-access edge (#289).
@@ -959,7 +966,6 @@ impl CtxReadTool {
                 project_root_snapshot = ctx.project_root.clone();
             }
         }
-
         if let Some(root) = ensured_root.as_deref() {
             crate::core::index_orchestrator::ensure_all_background(root);
         }
@@ -1022,7 +1028,6 @@ impl CtxReadTool {
                             &traversal_working_set,
                         );
                     }
-
                     let sig =
                         crate::core::mode_predictor::FileSignature::from_path(&path_bg, original);
                     let density = if output_tokens > 0 {
@@ -1078,7 +1083,6 @@ impl CtxReadTool {
                 }));
             });
         }
-
         if let Some(aid) = resolved_agent_id.as_deref() {
             crate::core::agent_budget::record_consumption(aid, output_tokens);
         }
@@ -1148,7 +1152,6 @@ impl CtxReadTool {
                 .unwrap_or_default();
             crate::core::rule_discovery::rules_suffix_for_read(path, &ctx.project_root, &client_id)
         };
-
         let mut warnings = Vec::new();
         if let Some(ref w) = budget_warning {
             warnings.push(w.as_str());
@@ -1260,7 +1263,6 @@ fn anchored_lines_mode(start: i64, limit: Option<i64>) -> String {
         None => format!("anchored:{start}-999999"),
     }
 }
-
 fn resolve_instruction_file_mode(path: &str, mode: &str) -> (String, Option<String>) {
     if !crate::tools::ctx_read::is_instruction_file(path)
         || matches!(mode, "full" | "raw" | "anchored")

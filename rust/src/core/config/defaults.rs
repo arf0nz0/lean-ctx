@@ -137,6 +137,7 @@ impl Default for Config {
             shell_hook_disabled: false,
             shadow_mode: true,
             hook_mode: None,
+            tool_surface: None,
             debug_log: false,
             shell_activation: ShellActivation::default(),
             skip_agent_aliases: false,

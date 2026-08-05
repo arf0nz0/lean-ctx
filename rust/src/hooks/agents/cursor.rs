@@ -305,7 +305,9 @@ pub(crate) fn install_cursor_deny_hook(_global: bool) {
         existing = serde_json::json!({});
     }
 
-    let root = existing.as_object_mut().unwrap();
+    let root = existing
+        .as_object_mut()
+        .expect("existing normalized to JSON object above");
     root.insert("version".to_string(), serde_json::json!(1));
 
     let hooks = root
@@ -314,7 +316,9 @@ pub(crate) fn install_cursor_deny_hook(_global: bool) {
     if !hooks.is_object() {
         *hooks = serde_json::json!({});
     }
-    let hooks_obj = hooks.as_object_mut().unwrap();
+    let hooks_obj = hooks
+        .as_object_mut()
+        .expect("hooks normalized to JSON object above");
 
     let pre = hooks_obj
         .entry("preToolUse".to_string())
@@ -322,7 +326,9 @@ pub(crate) fn install_cursor_deny_hook(_global: bool) {
     if !pre.is_array() {
         *pre = serde_json::json!([]);
     }
-    let pre_arr = pre.as_array_mut().unwrap();
+    let pre_arr = pre
+        .as_array_mut()
+        .expect("preToolUse normalized to JSON array above");
 
     // Read: redirect with smart compression (auto mode). Safe because
     // StrReplace does NOT fire Read PreToolUse (edit-probe PoC 2026-07).

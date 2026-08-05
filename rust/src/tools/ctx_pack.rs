@@ -516,7 +516,8 @@ fn handle_pr(
             match serde_json::to_string_pretty(&json) {
                 Ok(s) => {
                     json.tokens = count_tokens(&s) as u64;
-                    serde_json::to_string_pretty(&json).unwrap()
+                    serde_json::to_string_pretty(&json)
+                        .unwrap_or_else(|e| format!("{{\"error\": \"serialization failed: {e}\"}}"))
                 }
                 Err(e) => format!("{{\"error\": \"serialization failed: {e}\"}}"),
             }

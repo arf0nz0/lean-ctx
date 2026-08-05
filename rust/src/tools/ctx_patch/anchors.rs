@@ -115,11 +115,11 @@ fn parse_one(obj: &Map<String, Value>) -> Result<AnchorOp, String> {
                 ));
             }
             Ok(AnchorOp::ReplaceLines {
-                start_line: start_line.unwrap(),
+                start_line: start_line.expect("start_line required and validated above"),
                 start_hash,
-                end_line: end_line.unwrap(),
+                end_line: end_line.expect("end_line required and validated above"),
                 end_hash,
-                new_text: new_text.unwrap(),
+                new_text: new_text.expect("new_text required and validated above"),
             })
         }
         "insert_after" => {
@@ -158,10 +158,10 @@ fn parse_one(obj: &Map<String, Value>) -> Result<AnchorOp, String> {
                         ));
                     }
                     Ok(AnchorOp::Delete {
-                        start_line: sl.unwrap(),
-                        start_hash: sh.unwrap(),
-                        end_line: el.unwrap(),
-                        end_hash: eh.unwrap(),
+                        start_line: sl.expect("start_line required and validated above"),
+                        start_hash: sh.expect("start_hash required and validated above"),
+                        end_line: el.expect("end_line required and validated above"),
+                        end_hash: eh.expect("end_hash required and validated above"),
                     })
                 }
             } else {

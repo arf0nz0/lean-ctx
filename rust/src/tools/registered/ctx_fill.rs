@@ -54,7 +54,7 @@ impl McpTool for CtxFillTool {
             .ok_or_else(|| ErrorData::invalid_params("budget is required (non-negative)", None))?;
         let task = get_str(args, "task");
 
-        tokio::task::block_in_place(|| {
+        {
             let session_lock = ctx
                 .session
                 .as_ref()
@@ -77,10 +77,8 @@ impl McpTool for CtxFillTool {
                 }
             }
 
-            let timeout_dur =
-                crate::core::io_health::adaptive_timeout(std::time::Duration::from_secs(10));
-            let Ok(mut cache) = tokio::runtime::Handle::current()
-                .block_on(tokio::time::timeout(timeout_dur, cache_lock.write()))
+            let Some(mut cache) =
+                crate::server::bounded_lock::write(cache_lock, "ctx_fill cache write")
             else {
                 crate::core::io_health::record_freeze();
                 return Err(ErrorData::internal_error(
@@ -107,6 +105,6 @@ impl McpTool for CtxFillTool {
                 shell_outcome: None,
                 content_blocks: None,
             })
-        })
+        }
     }
 }

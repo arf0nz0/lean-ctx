@@ -28,6 +28,20 @@ pub(in crate::server) async fn dispatch_and_post_process(
                     detector.record_error_outcome(name, &args_fp);
                 }
                 crate::core::debug_log::log_mcp_error(name, args, &format!("{e:?}"));
+
+                // Devin/Windsurf treat hard -32602 as transport failure and
+                // respawn the server. Return a soft tool error so the agent
+                // sees the validation message and can fix parameter names.
+                if e.code == rmcp::model::ErrorCode::INVALID_PARAMS {
+                    tracing::debug!(
+                        "converting INVALID_PARAMS to soft tool error for '{name}': {}",
+                        e.message
+                    );
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.message.to_string(),
+                    )]));
+                }
+
                 return Err(e);
             }
         };

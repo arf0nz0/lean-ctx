@@ -434,12 +434,16 @@ fn build_tree(tokens: &[HtmlToken]) -> Vec<HtmlNodeChild> {
             HtmlToken::CloseTag { name } => {
                 if let Some(pos) = stack.iter().rposition(|n| n.tag == *name) {
                     while stack.len() > pos + 1 {
-                        let child = stack.pop_back().unwrap();
+                        let child = stack
+                            .pop_back()
+                            .expect("stack.len() > pos + 1 guarantees an element");
                         if let Some(parent) = stack.back_mut() {
                             parent.children.push(HtmlNodeChild::Element(child));
                         }
                     }
-                    let child = stack.pop_back().unwrap();
+                    let child = stack
+                        .pop_back()
+                        .expect("matching open tag guarantees a closable element");
                     if let Some(parent) = stack.back_mut() {
                         parent.children.push(HtmlNodeChild::Element(child));
                     }
@@ -457,7 +461,9 @@ fn build_tree(tokens: &[HtmlToken]) -> Vec<HtmlNodeChild> {
     }
 
     while stack.len() > 1 {
-        let child = stack.pop_back().unwrap();
+        let child = stack
+            .pop_back()
+            .expect("stack.len() > 1 guarantees an element");
         if let Some(parent) = stack.back_mut() {
             parent.children.push(HtmlNodeChild::Element(child));
         }

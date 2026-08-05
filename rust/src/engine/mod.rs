@@ -84,22 +84,29 @@ impl ContextEngine {
         tokio::spawn(async move {
             let _ = service.waiting().await;
         });
-
-        let server_msg =
-            match tokio::time::timeout(std::time::Duration::from_mins(2), rx.recv()).await {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_mins(2);
+        loop {
+            let server_msg = match tokio::time::timeout_at(deadline, rx.recv()).await {
                 Ok(Some(msg)) => msg,
                 Ok(None) => return Err(anyhow!("no response from tool call")),
                 Err(_) => return Err(anyhow!("tool call timed out after 120s")),
             };
 
-        match server_msg {
-            ServerJsonRpcMessage::Response(r) => match r.result {
-                ServerResult::CallToolResult(result) => Ok(result),
-                other => Err(anyhow!("unexpected server result: {other:?}")),
-            },
-            ServerJsonRpcMessage::Error(e) => Err(anyhow!("{e:?}")).context("tool call error"),
-            ServerJsonRpcMessage::Notification(_) => Err(anyhow!("unexpected notification")),
-            ServerJsonRpcMessage::Request(_) => Err(anyhow!("unexpected request")),
+            match server_msg {
+                ServerJsonRpcMessage::Notification(_) => {}
+                ServerJsonRpcMessage::Response(r) => {
+                    return match r.result {
+                        ServerResult::CallToolResult(result) => Ok(result),
+                        other => Err(anyhow!("unexpected server result: {other:?}")),
+                    };
+                }
+                ServerJsonRpcMessage::Error(e) => {
+                    return Err(anyhow!("{e:?}")).context("tool call error");
+                }
+                ServerJsonRpcMessage::Request(_) => {
+                    return Err(anyhow!("unexpected request"));
+                }
+            }
         }
     }
 

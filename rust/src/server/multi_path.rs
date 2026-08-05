@@ -74,17 +74,28 @@ pub fn resolve_tool_paths(
     }
 
     if let Some(session_lock) = ctx.session.as_ref() {
-        let (extra, jail_root) = tokio::task::block_in_place(|| {
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async {
-                let session = session_lock.read().await;
-                let root = session
-                    .project_root
-                    .clone()
-                    .unwrap_or_else(|| ".".to_string());
-                (session.extra_roots.clone(), root)
-            })
-        });
+        let (extra, jail_root) = {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let guard = loop {
+                if let Ok(g) = session_lock.clone().try_read_owned() {
+                    break Some(g);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            };
+            match guard {
+                Some(session) => {
+                    let root = session
+                        .project_root
+                        .clone()
+                        .unwrap_or_else(|| ".".to_string());
+                    (session.extra_roots.clone(), root)
+                }
+                None => (Vec::new(), ".".to_string()),
+            }
+        };
         if !extra.is_empty() {
             let jail = std::path::Path::new(&jail_root);
             let mut roots = vec![ctx.project_root.clone()];

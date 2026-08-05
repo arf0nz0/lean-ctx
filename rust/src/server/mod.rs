@@ -201,6 +201,14 @@ pub fn is_workflow_stale(run: &crate::core::workflow::types::WorkflowRun) -> boo
     elapsed > 30
 }
 
+/// Whether the MCP client has lean-ctx hooks installed that compress native
+/// Read/Shell/Grep/Glob transparently. Used by `list_tools` to decide whether
+/// the shadow-only surface (just `ctx_call`) is safe.
+fn is_client_hook_covered(client_name: &str) -> bool {
+    crate::core::home::resolve_home_dir()
+        .is_some_and(|home| crate::core::rules_channel::client_hook_covered(client_name, &home))
+}
+
 fn is_shell_tool_name(name: &str) -> bool {
     matches!(name, "ctx_shell" | "ctx_execute")
 }

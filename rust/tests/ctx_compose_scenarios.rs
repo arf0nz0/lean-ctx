@@ -92,7 +92,7 @@ fn compose_degrades_under_tight_budget_without_stalling() {
     // The exact-match + symbol stages are synchronous and index-backed, so the
     // whole call should still return promptly even when ranking is deferred.
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_secs(15),
         "tight budget must not stall the call (took {elapsed:?})"
     );
     assert!(

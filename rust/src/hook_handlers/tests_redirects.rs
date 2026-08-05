@@ -257,14 +257,16 @@ fn gh760_pipeline_with_path_segments_wraps_when_gate_clean() {
 }
 
 #[test]
-fn gh760_pipeline_with_non_allowed_sink_left_raw() {
+fn gh760_pipeline_with_non_allowed_sink_wrapped_for_enforcement() {
+    // #1408: Non-allowlisted sink is now wrapped for enforcement (security fix).
     let _lock = crate::core::data_dir::test_env_lock();
     crate::test_env::set_var("LEAN_CTX_SHELL_ALLOWLIST_OVERRIDE", "find");
     let cmd = "find . -name '*.jar' | custom-tool";
     let result = rewrite_candidate(cmd, "lean-ctx");
     crate::test_env::remove_var("LEAN_CTX_SHELL_ALLOWLIST_OVERRIDE");
     assert_eq!(
-        result, None,
-        "non-allowlisted sink must not be wrapped (passes through raw)"
+        result,
+        Some(expect_wrapped(cmd, "lean-ctx")),
+        "non-allowlisted sink must be wrapped for enforcement (#1408)"
     );
 }

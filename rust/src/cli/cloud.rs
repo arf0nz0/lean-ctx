@@ -552,7 +552,7 @@ pub fn cmd_cloud(args: &[String]) {
             println!("  status      — Show cloud connection status");
             println!(
                 "  upgrade     — Subscribe to Pro (Personal Cloud) or Team \
-                 [--plan pro|team|business] [--interval monthly|yearly]"
+                 [--plan pro|team] [--interval monthly|yearly]"
             );
         }
     }
@@ -850,7 +850,7 @@ fn parse_pulled_knowledge(
     core::knowledge::parse_import_data(&data)
 }
 
-/// `lean-ctx cloud upgrade [--plan pro|team|business] [--interval monthly|yearly]`
+/// `lean-ctx cloud upgrade [--plan pro|team] [--interval monthly|yearly]`
 /// — start a hosted Stripe Checkout for the logged-in account and print the URL
 /// to open. Defaults to Pro monthly (the self-serve Personal Cloud tier).
 fn cloud_upgrade(args: &[String]) {
@@ -863,7 +863,7 @@ fn cloud_upgrade(args: &[String]) {
         Err(e) => {
             eprintln!("{e}");
             eprintln!(
-                "Usage: lean-ctx cloud upgrade [--plan pro|team|business] [--interval monthly|yearly]"
+                "Usage: lean-ctx cloud upgrade [--plan pro|team] [--interval monthly|yearly]"
             );
             std::process::exit(1);
         }
@@ -884,9 +884,9 @@ fn cloud_upgrade(args: &[String]) {
 }
 
 /// Parse the optional `--plan` / `--interval` flags for `cloud upgrade`. Defaults
-/// are Pro + monthly. Only `pro`/`team`/`business` and `monthly`/`yearly` are
-/// accepted; an unknown value is an error (so a typo never silently buys the
-/// wrong plan). Enterprise stays sales-assisted and is deliberately absent.
+/// are Pro + monthly. Only `pro`/`team` and `monthly`/`yearly` are accepted; an
+/// unknown value is an error (so a typo never silently buys the wrong plan).
+/// Enterprise stays sales-assisted and is deliberately absent.
 fn parse_upgrade_args(args: &[String]) -> Result<(String, String), String> {
     let mut plan = "pro".to_string();
     let mut interval = "monthly".to_string();
@@ -895,11 +895,9 @@ fn parse_upgrade_args(args: &[String]) -> Result<(String, String), String> {
         match args[i].as_str() {
             "--plan" => {
                 i += 1;
-                let v = args
-                    .get(i)
-                    .ok_or("--plan needs a value (pro|team|business)")?;
-                if !matches!(v.as_str(), "pro" | "team" | "business") {
-                    return Err(format!("unknown plan '{v}' (use pro, team or business)"));
+                let v = args.get(i).ok_or("--plan needs a value (pro|team)")?;
+                if !matches!(v.as_str(), "pro" | "team") {
+                    return Err(format!("unknown plan '{v}' (use pro or team)"));
                 }
                 plan.clone_from(v);
             }
@@ -1047,11 +1045,8 @@ mod tests {
             parse_upgrade_args(&s(&["--yearly"])).unwrap(),
             ("pro".to_string(), "yearly".to_string())
         );
-        // Business is self-serve too (GL #533).
-        assert_eq!(
-            parse_upgrade_args(&s(&["--plan", "business"])).unwrap(),
-            ("business".to_string(), "monthly".to_string())
-        );
+        // Legacy "business" is no longer accepted (merged into team).
+        assert!(parse_upgrade_args(&s(&["--plan", "business"])).is_err());
     }
 
     #[test]

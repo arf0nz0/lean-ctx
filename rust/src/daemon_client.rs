@@ -16,6 +16,29 @@ fn delivery_runtime() -> Result<&'static Runtime> {
     }
 }
 
+/// Safely run an async future on the delivery runtime from any thread context.
+/// When called from inside a tokio runtime (e.g. tool handler async pipeline /
+/// prefetch re-entry), spawns a scoped thread to avoid "Cannot start a runtime
+/// from within a runtime". When called from outside (CLI), blocks directly.
+fn delivery_block_on<F, O>(fut: F) -> Option<O>
+where
+    F: std::future::Future<Output = O> + Send,
+    O: Send,
+{
+    let rt = delivery_runtime().ok()?;
+    if tokio::runtime::Handle::try_current().is_ok() {
+        let mut result = None;
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                result = Some(rt.block_on(fut));
+            });
+        });
+        result
+    } else {
+        Some(rt.block_on(fut))
+    }
+}
+
 /// Send an HTTP request to the daemon over the IPC channel.
 /// Returns the response body as a string.
 pub async fn daemon_request(method: &str, path: &str, body: &str) -> Result<String> {
@@ -195,6 +218,10 @@ pub fn try_daemon_tool_call_blocking(
 ) -> Option<String> {
     use std::time::Duration;
 
+    if std::env::var_os("__LEAN_CTX_NO_DAEMON").is_some() {
+        return None;
+    }
+
     let rt = Runtime::new().ok()?;
 
     let addr = daemon::daemon_addr();
@@ -323,7 +350,6 @@ pub fn try_delivery_check_blocking(
     if !daemon::is_daemon_running() {
         return None;
     }
-    let rt = delivery_runtime().ok()?;
     let body = serde_json::json!({
         "blake3": blake3,
         "mtime": mtime,
@@ -331,9 +357,10 @@ pub fn try_delivery_check_blocking(
         "requester_agent_id": requester_agent_id,
         "requester_conversation_id": requester_conversation_id,
     });
-    let resp = rt.block_on(async {
-        try_daemon_request("POST", "/ocla/v1/delivery/check", &body.to_string()).await
-    })?;
+    let body_str = body.to_string();
+    let resp = delivery_block_on(async move {
+        try_daemon_request("POST", "/ocla/v1/delivery/check", &body_str).await
+    })??;
     let v: serde_json::Value = serde_json::from_str(&resp).ok()?;
     if !v.get("hit")?.as_bool()? {
         return None;
@@ -354,6 +381,14 @@ pub fn try_delivery_check_blocking(
             .get("fresh")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
+        relay_content: v
+            .get("relay_content")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
+        relay_mode: v
+            .get("relay_mode")
+            .and_then(serde_json::Value::as_str)
+            .map(String::from),
     })
 }
 
@@ -389,7 +424,6 @@ pub fn try_cache_check_blocking(
     if !daemon::is_daemon_running() {
         return None;
     }
-    let rt = delivery_runtime().ok()?;
     let validator_str = match validator {
         crate::core::ocla::cache_types::CacheValidator::Immutable => "immutable".into(),
         crate::core::ocla::cache_types::CacheValidator::File { mtime_ns } => {
@@ -405,9 +439,10 @@ pub fn try_cache_check_blocking(
         "requester_agent_id": requester_agent_id,
         "requester_conversation_id": requester_conversation_id,
     });
-    let resp = rt.block_on(async {
-        try_daemon_request("POST", "/ocla/v1/cache/check", &body.to_string()).await
-    })?;
+    let body_str = body.to_string();
+    let resp = delivery_block_on(async move {
+        try_daemon_request("POST", "/ocla/v1/cache/check", &body_str).await
+    })??;
     let v: serde_json::Value = serde_json::from_str(&resp).ok()?;
     if !v.get("hit")?.as_bool()? {
         return None;

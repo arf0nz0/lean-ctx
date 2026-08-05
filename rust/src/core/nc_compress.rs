@@ -136,7 +136,10 @@ fn rewrite_md_links(input: &str) -> String {
             i += consumed;
             continue;
         }
-        let ch = rest.chars().next().unwrap();
+        let ch = rest
+            .chars()
+            .next()
+            .expect("rest non-empty while i < input.len()");
         out.push(ch);
         i += ch.len_utf8();
     }

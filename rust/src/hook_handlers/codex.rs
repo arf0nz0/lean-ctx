@@ -27,6 +27,12 @@ pub fn handle_codex_pretooluse() {
         print!("{}", codex_allow_output());
         return;
     }
+    // Shadow-only surface: native Bash passes through unmodified
+    if super::is_shadow_surface_active() {
+        let _ = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT);
+        print!("{}", codex_allow_output());
+        return;
+    }
     let binary = resolve_binary();
     let Some(input) = read_stdin_with_timeout(HOOK_STDIN_TIMEOUT) else {
         print!("{}", codex_allow_output());

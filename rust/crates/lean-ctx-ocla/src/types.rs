@@ -716,6 +716,12 @@ pub struct DeliveryRecord {
     pub read_at: u64,
     /// [INTERNAL] File modification timestamp.
     pub mtime: u64,
+    /// [INTERNAL] Compressed output relayed cross-agent (map/signatures, max 8KB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_content: Option<String>,
+    /// [INTERNAL] Mode key for relay_content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_mode: Option<String>,
     /// [INTERNAL] Freshness state.
     pub fresh: bool,
 }
@@ -737,6 +743,12 @@ pub struct DeliveryEntry {
     pub conversation_id: String,
     /// [INTERNAL] File modification timestamp.
     pub mtime: u64,
+    /// [INTERNAL] Compressed output relayed cross-agent (map/signatures, max 8KB).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_content: Option<String>,
+    /// [INTERNAL] Mode key for relay_content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_mode: Option<String>,
 }
 
 /// Result of an idempotent delivery-record attempt.
@@ -761,6 +773,12 @@ pub struct DeliveryStats {
     pub unique_paths: usize,
     /// [INTERNAL] Unique-agent count.
     pub unique_agents: usize,
+    /// [INTERNAL] Relay-served count (content served from another agent).
+    #[serde(default)]
+    pub relay_served: u64,
+    /// [INTERNAL] Tokens saved via relay (vs full re-read).
+    #[serde(default)]
+    pub relay_tokens_saved: u64,
 }
 
 /// Canonical, payload-free admission contract for one A2A relay.

@@ -33,20 +33,16 @@ fn plan_display(plan: Plan) -> &'static str {
         Plan::Supporter => "Supporter",
         Plan::Pro => "Pro",
         Plan::Team => "Team",
-        Plan::Business => "Business",
         Plan::Enterprise => "Enterprise",
     }
 }
 
-/// The exact command (or pointer) that unlocks `min`. Pro/Team/Business are
+/// The exact command (or pointer) that unlocks `min`. Pro/Team are
 /// self-serve via hosted Stripe Checkout; Enterprise is sales-assisted.
 fn upgrade_command(min: Plan) -> &'static str {
     match min {
         Plan::Team => "lean-ctx cloud upgrade --plan team",
-        Plan::Business => "lean-ctx cloud upgrade --plan business",
         Plan::Enterprise => "Enterprise plan — see https://leanctx.com/pricing",
-        // Supporter/Pro (and the defensive Free arm) resolve to the Pro tier,
-        // which is the cheapest paid checkout.
         _ => "lean-ctx cloud upgrade --plan pro",
     }
 }
@@ -64,8 +60,6 @@ fn render_hint(feature: &str, current: Plan) -> Option<String> {
         plan_display(min)
     ));
     out.push_str("Everything local keeps working — this only adds a hosted capability.\n");
-    // Only mention the current plan when it genuinely doesn't entitle the
-    // feature, so a stale "entitled" cache can never print a misleading line.
     if current != Plan::Free && !crate::core::billing::entitlement_allows(current, feature) {
         out.push_str(&format!("You're on {}.\n", plan_display(current)));
     }
@@ -104,14 +98,11 @@ mod tests {
         assert!(text.contains("lean-ctx Pro feature"));
         assert!(text.contains("Everything local keeps working"));
         assert!(text.contains("lean-ctx cloud upgrade --plan pro"));
-        // Free users don't get a redundant "You're on Free" line.
         assert!(!text.contains("You're on"));
     }
 
     #[test]
     fn private_registry_hint_targets_team_and_shows_current_plan() {
-        // A Pro user hitting a Team-gated capability is told it's Team and that
-        // they're currently on Pro.
         let text = render_hint("private_registry", Plan::Pro).expect("gated → hint");
         assert!(text.contains("lean-ctx Team feature"));
         assert!(text.contains("You're on Pro."));
@@ -120,8 +111,6 @@ mod tests {
 
     #[test]
     fn entitled_current_plan_suppresses_misleading_current_line() {
-        // If the (stale) cache says the user already has the capability, never
-        // print a contradictory "You're on …" line.
         let text = render_hint("cloud_sync", Plan::Pro).expect("still renders");
         assert!(!text.contains("You're on"));
     }
@@ -134,11 +123,10 @@ mod tests {
     }
 
     #[test]
-    fn oidc_sso_hint_targets_business_self_serve() {
-        let text = render_hint("sso_oidc", Plan::Team).expect("gated → hint");
+    fn oidc_sso_hint_targets_team_self_serve() {
+        let text = render_hint("sso_oidc", Plan::Pro).expect("gated");
         assert!(text.contains("Org SSO (OIDC)"));
-        assert!(text.contains("lean-ctx Business feature"));
-        assert!(text.contains("You're on Team."));
-        assert!(text.contains("lean-ctx cloud upgrade --plan business"));
+        assert!(text.contains("lean-ctx Team feature"));
+        assert!(text.contains("lean-ctx cloud upgrade --plan team"));
     }
 }

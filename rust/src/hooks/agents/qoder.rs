@@ -51,21 +51,27 @@ fn install_qoder_deny_hook() {
     if !root.is_object() {
         root = serde_json::json!({});
     }
-    let root_obj = root.as_object_mut().unwrap();
+    let root_obj = root
+        .as_object_mut()
+        .expect("root normalized to JSON object above");
     let hooks_value = root_obj
         .entry("hooks".to_string())
         .or_insert_with(|| serde_json::json!({}));
     if !hooks_value.is_object() {
         *hooks_value = serde_json::json!({});
     }
-    let hooks_obj = hooks_value.as_object_mut().unwrap();
+    let hooks_obj = hooks_value
+        .as_object_mut()
+        .expect("hooks normalized to JSON object above");
     let pre = hooks_obj
         .entry("PreToolUse".to_string())
         .or_insert_with(|| serde_json::json!([]));
     if !pre.is_array() {
         *pre = serde_json::json!([]);
     }
-    let entries = pre.as_array_mut().unwrap();
+    let entries = pre
+        .as_array_mut()
+        .expect("PreToolUse normalized to JSON array above");
 
     entries.retain(|e| !is_lean_ctx_qoder_deny_entry(e));
     entries.push(serde_json::json!({

@@ -112,8 +112,16 @@ impl EventStreamScanner {
             if self.buffered.len() < 12 {
                 return;
             }
-            let total = u32::from_be_bytes(self.buffered[0..4].try_into().unwrap()) as usize;
-            let headers = u32::from_be_bytes(self.buffered[4..8].try_into().unwrap()) as usize;
+            let total = u32::from_be_bytes(
+                self.buffered[0..4]
+                    .try_into()
+                    .expect("buffered length >= 12 guarantees 4-byte prefix"),
+            ) as usize;
+            let headers = u32::from_be_bytes(
+                self.buffered[4..8]
+                    .try_into()
+                    .expect("buffered length >= 12 guarantees 4-byte header count"),
+            ) as usize;
             if !(16..=8 * 1024 * 1024).contains(&total) || headers > total - 16 {
                 self.buffered.clear();
                 return;
@@ -122,9 +130,18 @@ impl EventStreamScanner {
                 return;
             }
             let frame: Vec<u8> = self.buffered.drain(..total).collect();
-            if crc32(&frame[..8]) != u32::from_be_bytes(frame[8..12].try_into().unwrap())
+            if crc32(&frame[..8])
+                != u32::from_be_bytes(
+                    frame[8..12]
+                        .try_into()
+                        .expect("frame total >= 16 guarantees 4-byte header CRC"),
+                )
                 || crc32(&frame[..total - 4])
-                    != u32::from_be_bytes(frame[total - 4..].try_into().unwrap())
+                    != u32::from_be_bytes(
+                        frame[total - 4..]
+                            .try_into()
+                            .expect("frame total >= 16 guarantees 4-byte trailer CRC"),
+                    )
             {
                 continue;
             }
